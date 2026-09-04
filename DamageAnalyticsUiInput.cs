@@ -113,6 +113,22 @@ namespace ShapeOfDreams.DamageAnalyzer
             return false;
         }
 
+        internal static bool ShouldSuppressGameMouseInput(MouseButton button, Vector3 mousePosition, float screenHeight, bool shouldShowAnalyticsUi)
+        {
+            if (button != MouseButton.Left && button != MouseButton.Right)
+            {
+                return false;
+            }
+
+            if (!shouldShowAnalyticsUi)
+            {
+                return false;
+            }
+
+            var guiPoint = new Vector2(mousePosition.x, screenHeight - mousePosition.y);
+            return IsGuiPointOverModPanel(guiPoint);
+        }
+
         internal static void ConsumeMouseEventsInside(Rect rect)
         {
             var evt = Event.current;

@@ -85,6 +85,7 @@ namespace ShapeOfDreams.DamageAnalyzer
 
             if (row.State == ComparisonPresentationMetricState.Unknown
                 || row.State == ComparisonPresentationMetricState.Unsupported
+                || row.State == ComparisonPresentationMetricState.NotApplicable
                 || row.State == ComparisonPresentationMetricState.Empty)
             {
                 return AppendDetail(
@@ -133,6 +134,8 @@ namespace ShapeOfDreams.DamageAnalyzer
                     return "Estimated";
                 case ComparisonPresentationMetricState.Utility:
                     return "Utility";
+                case ComparisonPresentationMetricState.NotApplicable:
+                    return "N/A";
                 case ComparisonPresentationMetricState.Unknown:
                     return "Unknown";
                 case ComparisonPresentationMetricState.Unsupported:
@@ -267,9 +270,9 @@ namespace ShapeOfDreams.DamageAnalyzer
             EnsureStyles();
             var rect = CalculatePanelRect(Screen.width, Screen.height, _view);
             DamageAnalyticsUiInput.RegisterPanelRect(DamageAnalyticsPanelKind.Comparison, rect);
-            DamageAnalyticsUiInput.ConsumeMouseEventsInside(rect);
             GUI.Box(rect, GUIContent.none, _panelStyle);
             DrawPanel(rect, _view);
+            DamageAnalyticsUiInput.ConsumeMouseEventsInside(rect);
         }
 
         private void ClearRenderedState()
@@ -348,7 +351,7 @@ namespace ShapeOfDreams.DamageAnalyzer
                 GUI.Label(
                     new Rect(x, y, width, RowHeight),
                     LiveCandidateComparisonPanelPresenter.TrimForPanel(
-                        "BEST DAMAGE: replace " + view.Comparison.RecommendedOption.ReplacementLabel,
+                        "BEST DAMAGE: " + FormatActionVerb(view.Comparison.RecommendedOption) + " " + view.Comparison.RecommendedOption.ReplacementLabel,
                         RowMaxLength),
                     _recommendationStyle);
                 y += RowHeight;
@@ -385,7 +388,7 @@ namespace ShapeOfDreams.DamageAnalyzer
                 GUI.Label(
                     new Rect(x, y, width, RowHeight),
                     LiveCandidateComparisonPanelPresenter.TrimForPanel(
-                        (recommended ? "BEST  " : "Replace  ") + option.ReplacementLabel,
+                        (recommended ? "BEST  " : FormatActionVerb(option) + "  ") + option.ReplacementLabel,
                         ReplacementMaxLength),
                     recommended ? _recommendationStyle : _labelStyle);
                 y += RowHeight;
@@ -431,6 +434,7 @@ namespace ShapeOfDreams.DamageAnalyzer
                 var row = rows[i];
                 var style = row.State == ComparisonPresentationMetricState.Unknown
                     || row.State == ComparisonPresentationMetricState.Unsupported
+                    || row.State == ComparisonPresentationMetricState.NotApplicable
                     ? _warningStyle
                     : normalStyle;
                 var prefix = LiveCandidateComparisonPanelPresenter.FormatStateLabel(row.State) + ": ";
@@ -448,6 +452,15 @@ namespace ShapeOfDreams.DamageAnalyzer
             }
 
             return y;
+        }
+
+        private static string FormatActionVerb(ComparisonOptionPresentation option)
+        {
+            return option != null
+                && option.Comparison != null
+                && option.Comparison.ActionKind == CandidateEquipActionKind.EquipIntoEmptySlot
+                ? "Equip"
+                : "Replace";
         }
 
         private static float DrawObservedRows(

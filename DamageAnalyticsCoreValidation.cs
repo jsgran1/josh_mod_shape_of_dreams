@@ -17,6 +17,10 @@ namespace ShapeOfDreams.DamageAnalyzer
             ValidatesLocalAndPartnerShares();
             ValidatesLocalAndPartnerSourceBreakdownIsolation();
             ValidatesUnknownOwnerCoverage();
+            ValidatesConfirmedSoloRejectsSecondPlayerBucket();
+            ValidatesConfirmedSoloKeepsSummonOwnedByLocalPlayer();
+            ValidatesConfirmedSoloNonPlayerHostileDamageDoesNotCreatePartner();
+            ValidatesConfirmedSoloResetAllowsCoopIsolation();
             ValidatesUnattributedSourceDamageIsRetained();
             ValidatesNonHostileDamageFiltering();
             ValidatesNonHostileDamageDoesNotContaminateSources();
@@ -53,6 +57,8 @@ namespace ShapeOfDreams.DamageAnalyzer
             ValidatesMemoryGemPackageOrderingIsDeterministic();
             ValidatesAnalyticsPanelsStackMidLeftWithoutOverlap();
             ValidatesAnalyticsPanelHitTestMatchesRenderedRegion();
+            ValidatesGameInputSuppressionInsidePanelsOnly();
+            ValidatesRunPanelTabSelectionChangesMode();
             ValidatesAnalyticsPanelPresentationLabels();
             ValidatesAnalyticsPanelsHideForNativeMemoryGemTooltips();
             ValidatesAnalyticsUiLifecycleVisibilityPolicy();
@@ -70,6 +76,7 @@ namespace ShapeOfDreams.DamageAnalyzer
             ValidatesBuildStateSnapshotCopiesInputs();
             ValidatesComparisonResultAndConfidenceSemantics();
             ValidatesUnknownAndUnsupportedComparisonValuesAreNotZero();
+            ValidatesNotApplicableComparisonValuesAreNotZero();
             ValidatesBuildOptionComparisonComposition();
             ValidatesContextualEffectEvaluatorPassesThroughStructuredValues();
             ValidatesContextualEffectEvaluatorResolvesMatchingCondition();
@@ -94,9 +101,21 @@ namespace ShapeOfDreams.DamageAnalyzer
             ValidatesComparisonPresentationEmptyState();
             ValidatesComparisonPresentationKeepsObservedContextSeparate();
             ValidatesLiveCandidateGemComparisonEvaluatesLegalTargetsIndependently();
+            ValidatesLiveCandidateGemComparisonIncludesEmptySlotAction();
+            ValidatesModifierGemUsesContextualMemoryComparison();
+            ValidatesContextualGemComparisonUsesTargetParentMemory();
+            ValidatesDirectDamageGemRetainsDirectMetricInContextualComparison();
+            ValidatesLiveCandidateComparisonDistinguishesReplacementAndInsertion();
+            ValidatesLiveCandidateComparisonSurfacesMaterialUtility();
+            ValidatesMaterialUtilitySuppressesOverallRecommendation();
+            ValidatesBestKnownDamageStaysDistinctFromBestReplacement();
+            ValidatesObservedPackageContextDoesNotAffectGemRanking();
             ValidatesLiveCandidateComparisonAddsObservedRunContextFromSnapshotsOnly();
             ValidatesLiveCandidateComparisonOmitsMissingObservedHistory();
+            ValidatesLiveCandidateComparisonPreservesNotApplicableAndUnknownRows();
+            ValidatesChargeRegressionUsesNativeDisplayedCap();
             ValidatesLiveCandidateMemoryComparisonKeepsSlotGemContext();
+            ValidatesLiveCandidateMemoryComparisonIncludesEmptySlotAction();
             ValidatesLiveCandidateComparisonLifecycleClearReplaceAndDuplicateFallback();
             ValidatesLiveComparisonPanelRendersSupportedGemAndMemoryTargets();
             ValidatesLiveComparisonPanelPreservesUnknownAndDuplicateUnsupportedStates();
@@ -241,6 +260,73 @@ namespace ShapeOfDreams.DamageAnalyzer
             AssertApproximately(40f, encounter.Coverage.UnknownOwnerHostileDamage, "encounter unknown hostile coverage");
             AssertPlayerDamage(run, local, 100f, 1, "run local");
             AssertApproximately(40f, run.Coverage.UnknownOwnerHostileDamage, "run unknown hostile coverage");
+        }
+
+        private static void ValidatesConfirmedSoloRejectsSecondPlayerBucket()
+        {
+            var service = new DamageAnalyticsService();
+            var local = Local("local-a");
+            var phantom = Partner("Dreamer");
+
+            service.SetConfirmedSoloPlayer(local);
+            service.CaptureDamage(1f, 100f, local, TargetRelationship.Hostile, DamageSourceCategory.BasicAttack);
+            service.CaptureDamage(2f, 40f, phantom, TargetRelationship.Hostile, DamageSourceCategory.BasicAttack);
+
+            var run = service.GetRunSnapshot();
+            AssertPlayerCount(run, 1, "confirmed solo player count");
+            AssertPlayerDamage(run, local, 100f, 1, "confirmed solo local damage");
+            AssertApproximately(140f, run.Coverage.EligibleHostileDamage, "confirmed solo hostile coverage");
+            AssertApproximately(100f, run.Coverage.PlayerOwnedHostileDamage, "confirmed solo player-owned coverage");
+            AssertApproximately(40f, run.Coverage.UnknownOwnerHostileDamage, "confirmed solo rejected owner coverage");
+        }
+
+        private static void ValidatesConfirmedSoloKeepsSummonOwnedByLocalPlayer()
+        {
+            var service = new DamageAnalyticsService();
+            var local = Local("local-a");
+            var summon = Source(DamageSourceCategory.Summon, "Sum_Local");
+
+            service.SetConfirmedSoloPlayer(local);
+            service.CaptureDamage(1f, 75f, local, TargetRelationship.Hostile, summon);
+
+            var player = FindPlayer(service.GetRunSnapshot(), local, "confirmed solo summon local");
+            AssertSourceDamage(player, summon, 75f, 1, "confirmed solo summon source");
+            AssertPlayerCount(service.GetRunSnapshot(), 1, "confirmed solo summon player count");
+        }
+
+        private static void ValidatesConfirmedSoloNonPlayerHostileDamageDoesNotCreatePartner()
+        {
+            var service = new DamageAnalyticsService();
+            var local = Local("local-a");
+
+            service.SetConfirmedSoloPlayer(local);
+            service.CaptureDamage(1f, 100f, local, TargetRelationship.Hostile, DamageSourceCategory.BasicAttack);
+            service.CaptureDamage(2f, 25f, null, TargetRelationship.Hostile, DamageSourceCategory.Unattributed);
+
+            var run = service.GetRunSnapshot();
+            AssertPlayerCount(run, 1, "confirmed solo non-player player count");
+            AssertPlayerDamage(run, local, 100f, 1, "confirmed solo non-player local damage");
+            AssertApproximately(25f, run.Coverage.UnknownOwnerHostileDamage, "confirmed solo non-player unknown coverage");
+        }
+
+        private static void ValidatesConfirmedSoloResetAllowsCoopIsolation()
+        {
+            var service = new DamageAnalyticsService();
+            var local = Local("local-a");
+            var partner = Partner("partner-a");
+
+            service.SetConfirmedSoloPlayer(local);
+            service.CaptureDamage(1f, 100f, partner, TargetRelationship.Hostile, DamageSourceCategory.BasicAttack);
+            AssertPlayerCount(service.GetRunSnapshot(), 0, "confirmed solo rejects partner before reset");
+
+            service.ResetRunForNewGame(5f);
+            service.CaptureDamage(6f, 100f, local, TargetRelationship.Hostile, DamageSourceCategory.BasicAttack);
+            service.CaptureDamage(7f, 50f, partner, TargetRelationship.Hostile, DamageSourceCategory.BasicAttack);
+
+            var run = service.GetRunSnapshot();
+            AssertPlayerCount(run, 2, "coop isolation after solo reset");
+            AssertPlayerDamage(run, local, 100f, 1, "coop local after solo reset");
+            AssertPlayerDamage(run, partner, 50f, 1, "coop partner after solo reset");
         }
 
         private static void ValidatesUnattributedSourceDamageIsRetained()
@@ -900,6 +986,42 @@ namespace ShapeOfDreams.DamageAnalyzer
             AssertTrue(!DamageAnalyticsUiInput.IsGuiPointOverModPanel(new UnityEngine.Vector2(23f, 121f)), "hit test cleared rect");
         }
 
+        private static void ValidatesGameInputSuppressionInsidePanelsOnly()
+        {
+            var rect = new UnityEngine.Rect(22f, 120f, 314f, 220f);
+            DamageAnalyticsUiInput.RegisterPanelRect(DamageAnalyticsPanelKind.Run, rect);
+
+            AssertTrue(
+                DamageAnalyticsUiInput.ShouldSuppressGameMouseInput(MouseButton.Left, new UnityEngine.Vector3(23f, 1080f - 121f, 0f), 1080f, true),
+                "left click inside mod panel suppresses game input");
+            AssertTrue(
+                DamageAnalyticsUiInput.ShouldSuppressGameMouseInput(MouseButton.Right, new UnityEngine.Vector3(23f, 1080f - 121f, 0f), 1080f, true),
+                "right click inside mod panel suppresses game input");
+            AssertFalse(
+                DamageAnalyticsUiInput.ShouldSuppressGameMouseInput(MouseButton.Left, new UnityEngine.Vector3(21f, 1080f - 121f, 0f), 1080f, true),
+                "left click outside mod panel remains game input");
+            AssertFalse(
+                DamageAnalyticsUiInput.ShouldSuppressGameMouseInput(MouseButton.Left, new UnityEngine.Vector3(23f, 1080f - 121f, 0f), 1080f, false),
+                "hidden panel does not suppress game input");
+
+            DamageAnalyticsUiInput.ClearPanelRect(DamageAnalyticsPanelKind.Run);
+        }
+
+        private static void ValidatesRunPanelTabSelectionChangesMode()
+        {
+            DamageAnalyticsRunPanel.SelectMode(RunAnalyticsPanelMode.Package);
+            AssertEqual((int)RunAnalyticsPanelMode.Package, (int)DamageAnalyticsRunPanel.CurrentModeForValidation, "run panel starts package mode");
+
+            DamageAnalyticsRunPanel.SelectMode(RunAnalyticsPanelMode.Memory);
+            AssertEqual((int)RunAnalyticsPanelMode.Memory, (int)DamageAnalyticsRunPanel.CurrentModeForValidation, "run panel selects memory mode");
+
+            DamageAnalyticsRunPanel.SelectMode(RunAnalyticsPanelMode.Gem);
+            AssertEqual((int)RunAnalyticsPanelMode.Gem, (int)DamageAnalyticsRunPanel.CurrentModeForValidation, "run panel selects gem mode");
+
+            DamageAnalyticsRunPanel.SelectMode(RunAnalyticsPanelMode.Package);
+            AssertEqual((int)RunAnalyticsPanelMode.Package, (int)DamageAnalyticsRunPanel.CurrentModeForValidation, "run panel selects package mode");
+        }
+
         private static void ValidatesAnalyticsPanelPresentationLabels()
         {
             AssertEqual("Source", EncounterAnalyticsPanelPresenter.SourceColumnHeader, "encounter source header");
@@ -1437,6 +1559,26 @@ namespace ShapeOfDreams.DamageAnalyzer
             AssertTrue(unsupportedEffect.IsUnknownOrUnsupported, "unsupported effect semantic");
             AssertFalse(unknownEffect.HasNumericProjection, "unknown effect has no numeric projection");
             AssertFalse(unsupportedEffect.HasNumericProjection, "unsupported effect has no numeric projection");
+        }
+
+        private static void ValidatesNotApplicableComparisonValuesAreNotZero()
+        {
+            var notApplicableMetric = ComparisonMetric.NotApplicable("direct-gem-damage", "Direct Gem damage", new[] { "Gem has no direct damage event" });
+            var candidate = ComparisonGem("Gem_Candidate", "Candidate Gem");
+            var replacement = ComparisonGem("Gem_Current", "Current Gem");
+            var view = ComparisonPresentationShell.BuildView(new[]
+            {
+                ComparisonOption(candidate, replacement, notApplicableMetric)
+            });
+
+            AssertTrue(notApplicableMetric.IsUnknownOrUnsupported, "not-applicable metric is non-comparable");
+            AssertFalse(notApplicableMetric.HasNumericProjection, "not-applicable metric has no numeric projection");
+            AssertFalse(notApplicableMetric.HasKnownNumericDelta, "not-applicable metric has no known delta");
+            AssertEqual((int)ComparisonResultClass.NotApplicable, (int)notApplicableMetric.ResultClass, "not-applicable result class");
+            AssertEqual(0, view.RankedDamageOptions.Count, "not-applicable not ranked as damage");
+            AssertEqual(1, view.UnrankedOptions.Count, "not-applicable remains visible");
+            AssertEqual((int)ComparisonPresentationMetricState.NotApplicable, (int)view.UnrankedOptions[0].PrimaryDamageRow.State, "not-applicable presentation state");
+            AssertEqual("N/A", view.UnrankedOptions[0].PrimaryDamageRow.ValueText, "not-applicable presentation text");
         }
 
         private static void ValidatesBuildOptionComparisonComposition()
@@ -2242,6 +2384,301 @@ namespace ShapeOfDreams.DamageAnalyzer
             AssertTrue(build.Gems[1].GemKey.Equals(gemB), "live gem second original unchanged");
         }
 
+        private static void ValidatesLiveCandidateGemComparisonIncludesEmptySlotAction()
+        {
+            var player = Local("local-empty-gem");
+            var memory = Memory(player, "Mem_OpenGemSlot");
+            var candidateKey = Gem(player, "Gem_Candidate");
+            var memoryState = new MemoryState(
+                memory,
+                memory.ContentId,
+                0,
+                null,
+                3,
+                null,
+                Array.Empty<GemKey>(),
+                new[] { Structured(CommonComparisonValueIds.DamagePerHit, "Memory damage", 100f, "damage", "100", ComparisonResultClass.Exact, ComparisonConfidence.Verified) });
+            var candidate = new GemState(
+                candidateKey,
+                candidateKey.ContentId,
+                100f,
+                null,
+                new[] { Structured(CommonComparisonValueIds.DamageModifier, "Damage modifier", 0.5f, "multiplier", "+50%", ComparisonResultClass.Derived, ComparisonConfidence.HighConfidence) });
+            var build = new BuildStateSnapshot(player, "Traveler_Primus", null, new[] { memoryState }, Array.Empty<GemState>(), null, 1f);
+            var service = new LiveCandidateComparisonService();
+
+            var snapshot = service.RefreshGemCandidate(
+                build,
+                candidate,
+                new[] { new LiveGemReplacementTarget(CandidateEquipActionKind.EquipIntoEmptySlot, null, memoryState, 0) },
+                false,
+                2f);
+            var option = snapshot.Comparisons[0];
+
+            AssertEqual((int)LiveCandidateComparisonStatus.Ready, (int)snapshot.Status, "live empty gem ready");
+            AssertEqual((int)CandidateEquipActionKind.EquipIntoEmptySlot, (int)option.ActionKind, "live empty gem action kind");
+            AssertNull(option.ReplacementTarget, "live empty gem removed item");
+            AssertEqual(0, option.ObservedContext.Count, "live empty gem no removed observed context");
+            AssertEqual("contextual-memory-damage", option.PrimaryDamageDelta.MetricId, "live empty gem contextual primary");
+            AssertApproximately(50f, Require(option.PrimaryDamageDelta.DeltaValue, "live empty gem damage delta"), "live empty gem delta");
+        }
+
+        private static void ValidatesModifierGemUsesContextualMemoryComparison()
+        {
+            var player = Local("local-contextual-modifier");
+            var memory = Memory(player, "Mem_ModifiedDamage");
+            var currentGemKey = Gem(player, "Gem_CurrentModifier");
+            var candidateGemKey = Gem(player, "Gem_CandidateModifier");
+            var memoryState = new MemoryState(
+                memory,
+                memory.ContentId,
+                0,
+                null,
+                12,
+                null,
+                new[] { currentGemKey },
+                new[] { Structured(CommonComparisonValueIds.DamagePerHit, "Memory damage", 100f, "damage", "100", ComparisonResultClass.Exact, ComparisonConfidence.Verified) });
+            var currentGem = new GemState(
+                currentGemKey,
+                currentGemKey.ContentId,
+                100f,
+                memory,
+                new[]
+                {
+                    Structured(CommonComparisonValueIds.DamageModifier, "Damage modifier", 0.2f, "multiplier", "+20%", ComparisonResultClass.Derived, ComparisonConfidence.HighConfidence),
+                    Structured(CommonComparisonValueIds.DirectDamage, "Direct damage", null, "", "N/A", ComparisonResultClass.NotApplicable, ComparisonConfidence.Verified)
+                });
+            var candidateGem = new GemState(
+                candidateGemKey,
+                candidateGemKey.ContentId,
+                200f,
+                null,
+                new[]
+                {
+                    Structured(CommonComparisonValueIds.DamageModifier, "Damage modifier", 0.5f, "multiplier", "+50%", ComparisonResultClass.Derived, ComparisonConfidence.HighConfidence),
+                    Structured(CommonComparisonValueIds.DirectDamage, "Direct damage", null, "", "N/A", ComparisonResultClass.NotApplicable, ComparisonConfidence.Verified)
+                });
+            var build = new BuildStateSnapshot(player, "Traveler_Primus", null, new[] { memoryState }, new[] { currentGem }, null, 1f);
+            var service = new LiveCandidateComparisonService();
+
+            var snapshot = service.RefreshGemCandidate(
+                build,
+                candidateGem,
+                new[] { new LiveGemReplacementTarget(currentGem, memoryState, 0) },
+                false,
+                2f);
+            var option = snapshot.Comparisons[0];
+
+            AssertEqual((int)LiveCandidateComparisonStatus.Ready, (int)snapshot.Status, "modifier gem contextual snapshot ready");
+            AssertEqual("contextual-memory-damage", option.PrimaryDamageDelta.MetricId, "modifier gem contextual primary metric");
+            AssertApproximately(120f, Require(option.PrimaryDamageDelta.BeforeValue, "modifier gem contextual before"), "modifier gem contextual before");
+            AssertApproximately(150f, Require(option.PrimaryDamageDelta.AfterValue, "modifier gem contextual after"), "modifier gem contextual after");
+            AssertApproximately(30f, Require(option.PrimaryDamageDelta.DeltaValue, "modifier gem contextual delta"), "modifier gem contextual delta");
+            AssertHasMetric(option.Metrics, "damage-modifier", "modifier gem damage modifier row");
+            AssertHasMetric(option.Metrics, "direct-damage", "modifier gem direct N/A row");
+        }
+
+        private static void ValidatesContextualGemComparisonUsesTargetParentMemory()
+        {
+            var player = Local("local-parent-memory");
+            var memoryA = Memory(player, "Mem_LowDamage");
+            var memoryB = Memory(player, "Mem_HighDamage");
+            var gemA = Gem(player, "Gem_A");
+            var gemB = Gem(player, "Gem_B");
+            var candidateKey = Gem(player, "Gem_ContextCandidate");
+            var memoryStateA = new MemoryState(memoryA, memoryA.ContentId, 0, null, 5, null, new[] { gemA }, new[] { Structured(CommonComparisonValueIds.DamagePerHit, "Memory damage", 50f, "damage", "50", ComparisonResultClass.Exact, ComparisonConfidence.Verified) });
+            var memoryStateB = new MemoryState(memoryB, memoryB.ContentId, 1, null, 5, null, new[] { gemB }, new[] { Structured(CommonComparisonValueIds.DamagePerHit, "Memory damage", 200f, "damage", "200", ComparisonResultClass.Exact, ComparisonConfidence.Verified) });
+            var currentGemA = new GemState(gemA, gemA.ContentId, 100f, memoryA, new[] { Structured(CommonComparisonValueIds.DamageModifier, "Damage modifier", 0f, "multiplier", "0", ComparisonResultClass.Derived, ComparisonConfidence.HighConfidence) });
+            var currentGemB = new GemState(gemB, gemB.ContentId, 100f, memoryB, new[] { Structured(CommonComparisonValueIds.DamageModifier, "Damage modifier", 0f, "multiplier", "0", ComparisonResultClass.Derived, ComparisonConfidence.HighConfidence) });
+            var candidate = new GemState(candidateKey, candidateKey.ContentId, 100f, null, new[] { Structured(CommonComparisonValueIds.DamageModifier, "Damage modifier", 0.25f, "multiplier", "+25%", ComparisonResultClass.Derived, ComparisonConfidence.HighConfidence) });
+            var build = new BuildStateSnapshot(player, "Traveler_Primus", null, new[] { memoryStateA, memoryStateB }, new[] { currentGemA, currentGemB }, null, 1f);
+            var service = new LiveCandidateComparisonService();
+
+            var snapshot = service.RefreshGemCandidate(
+                build,
+                candidate,
+                new[]
+                {
+                    new LiveGemReplacementTarget(currentGemA, memoryStateA, 0),
+                    new LiveGemReplacementTarget(currentGemB, memoryStateB, 0)
+                },
+                false,
+                2f);
+
+            AssertApproximately(12.5f, Require(snapshot.Comparisons[0].PrimaryDamageDelta.DeltaValue, "parent memory low delta"), "parent memory low contextual delta");
+            AssertApproximately(50f, Require(snapshot.Comparisons[1].PrimaryDamageDelta.DeltaValue, "parent memory high delta"), "parent memory high contextual delta");
+            AssertTrue(snapshot.ContextualEvaluations[0].MemoryContext.MemoryKey.Equals(memoryA), "parent memory first evaluation context");
+            AssertTrue(snapshot.ContextualEvaluations[1].MemoryContext.MemoryKey.Equals(memoryB), "parent memory second evaluation context");
+        }
+
+        private static void ValidatesDirectDamageGemRetainsDirectMetricInContextualComparison()
+        {
+            var player = Local("local-direct-gem");
+            var memory = Memory(player, "Mem_DirectGem");
+            var currentGemKey = Gem(player, "Gem_CurrentDirect");
+            var candidateGemKey = Gem(player, "Gem_CandidateDirect");
+            var memoryState = new MemoryState(memory, memory.ContentId, 0, null, 3, null, new[] { currentGemKey }, new[] { Structured(CommonComparisonValueIds.DamagePerHit, "Memory damage", 100f, "damage", "100", ComparisonResultClass.Exact, ComparisonConfidence.Verified) });
+            var currentGem = new GemState(currentGemKey, currentGemKey.ContentId, 100f, memory, new[] { Structured(CommonComparisonValueIds.DirectDamage, "Direct damage", 20f, "damage", "20", ComparisonResultClass.Exact, ComparisonConfidence.Verified) });
+            var candidateGem = new GemState(candidateGemKey, candidateGemKey.ContentId, 100f, null, new[] { Structured(CommonComparisonValueIds.DirectDamage, "Direct damage", 35f, "damage", "35", ComparisonResultClass.Exact, ComparisonConfidence.Verified) });
+            var build = new BuildStateSnapshot(player, "Traveler_Primus", null, new[] { memoryState }, new[] { currentGem }, null, 1f);
+            var service = new LiveCandidateComparisonService();
+
+            var snapshot = service.RefreshGemCandidate(build, candidateGem, new[] { new LiveGemReplacementTarget(currentGem, memoryState, 0) }, false, 2f);
+            var option = snapshot.Comparisons[0];
+
+            AssertEqual("contextual-memory-damage", option.PrimaryDamageDelta.MetricId, "direct gem contextual primary retained");
+            AssertApproximately(15f, Require(option.PrimaryDamageDelta.DeltaValue, "direct gem contextual delta"), "direct gem contextual delta");
+            AssertHasMetric(option.Metrics, "direct-damage", "direct gem direct projected row retained");
+        }
+
+        private static void ValidatesLiveCandidateComparisonDistinguishesReplacementAndInsertion()
+        {
+            var player = Local("local-insert-replace");
+            var memory = Memory(player, "Mem_InsertReplace");
+            var currentKey = Gem(player, "Gem_Current");
+            var candidateKey = Gem(player, "Gem_Candidate");
+            var memoryState = new MemoryState(
+                memory,
+                memory.ContentId,
+                0,
+                null,
+                3,
+                null,
+                new[] { currentKey },
+                new[] { Structured(CommonComparisonValueIds.DamagePerHit, "Memory damage", 100f, "damage", "100", ComparisonResultClass.Exact, ComparisonConfidence.Verified) });
+            var current = new GemState(currentKey, currentKey.ContentId, 100f, memory, new[] { Structured(CommonComparisonValueIds.DamageModifier, "Damage modifier", 0.2f, "multiplier", "+20%", ComparisonResultClass.Derived, ComparisonConfidence.HighConfidence) });
+            var candidate = new GemState(candidateKey, candidateKey.ContentId, 100f, null, new[] { Structured(CommonComparisonValueIds.DamageModifier, "Damage modifier", 0.5f, "multiplier", "+50%", ComparisonResultClass.Derived, ComparisonConfidence.HighConfidence) });
+            var build = new BuildStateSnapshot(player, "Traveler_Primus", null, new[] { memoryState }, new[] { current }, null, 1f);
+            var service = new LiveCandidateComparisonService();
+
+            var snapshot = service.RefreshGemCandidate(
+                build,
+                candidate,
+                new[]
+                {
+                    new LiveGemReplacementTarget(current, memoryState, 0),
+                    new LiveGemReplacementTarget(CandidateEquipActionKind.EquipIntoEmptySlot, null, memoryState, 1)
+                },
+                false,
+                2f);
+
+            AssertEqual((int)CandidateEquipActionKind.ReplaceExisting, (int)snapshot.Comparisons[0].ActionKind, "live replace action kind");
+            AssertEqual(currentKey.StableId, snapshot.Comparisons[0].ReplacementTarget.Value.StableId, "live replace removed item");
+            AssertEqual((int)CandidateEquipActionKind.EquipIntoEmptySlot, (int)snapshot.Comparisons[1].ActionKind, "live insert action kind");
+            AssertNull(snapshot.Comparisons[1].ReplacementTarget, "live insert no removed item");
+            AssertApproximately(30f, Require(snapshot.Comparisons[0].PrimaryDamageDelta.DeltaValue, "live replace delta"), "live replacement semantics delta");
+            AssertApproximately(50f, Require(snapshot.Comparisons[1].PrimaryDamageDelta.DeltaValue, "live insert delta"), "live insertion semantics delta");
+        }
+
+        private static void ValidatesLiveCandidateComparisonSurfacesMaterialUtility()
+        {
+            var player = Local("local-utility");
+            var memory = Memory(player, "Mem_Utility");
+            var adventureKey = Gem(player, "Gem_Adventure");
+            var candidateKey = Gem(player, "Gem_Damage");
+            var memoryState = new MemoryState(memory, memory.ContentId, 0, null, 3, null, new[] { adventureKey }, new[] { Structured(CommonComparisonValueIds.DamagePerHit, "Memory damage", 100f, "damage", "100", ComparisonResultClass.Exact, ComparisonConfidence.Verified) });
+            var adventure = new GemState(
+                adventureKey,
+                adventureKey.ContentId,
+                100f,
+                memory,
+                new[]
+                {
+                    Structured(CommonComparisonValueIds.MaterialUtilityPrefix + "adventure-essence", "Adventure Essence utility", null, "", "increase another Essence by +10% quality and gain Gold", ComparisonResultClass.Unsupported, ComparisonConfidence.Unsupported)
+                });
+            var candidate = new GemState(candidateKey, candidateKey.ContentId, 100f, null, new[] { Structured(CommonComparisonValueIds.DamageModifier, "Damage modifier", 0.5f, "multiplier", "+50%", ComparisonResultClass.Derived, ComparisonConfidence.HighConfidence) });
+            var build = new BuildStateSnapshot(player, "Traveler_Primus", null, new[] { memoryState }, new[] { adventure }, null, 1f);
+            var service = new LiveCandidateComparisonService();
+
+            var snapshot = service.RefreshGemCandidate(build, candidate, new[] { new LiveGemReplacementTarget(adventure, memoryState, 0) }, false, 2f);
+            var view = ComparisonPresentationShell.BuildView(snapshot.Comparisons);
+
+            AssertHasPresentationState(view.RankedDamageOptions[0].UtilityRows, ComparisonPresentationMetricState.Unsupported, "material utility unsupported visible");
+            AssertTrue(view.RankedDamageOptions[0].UtilityRows[0].Label.IndexOf("Adventure", StringComparison.OrdinalIgnoreCase) >= 0, "material utility label");
+        }
+
+        private static void ValidatesMaterialUtilitySuppressesOverallRecommendation()
+        {
+            var candidate = ComparisonGem("Gem_Candidate", "Candidate Gem");
+            var replaceA = ComparisonGem("Gem_A", "Gem A");
+            var replaceB = ComparisonGem("Gem_B", "Gem B");
+            var unsafeUtility = new ComparisonUtilityChange(
+                CommonComparisonValueIds.MaterialUtilityPrefix + "adventure-essence",
+                "Lose Adventure Essence quality propagation",
+                null,
+                null,
+                null,
+                "",
+                ComparisonResultClass.Unsupported,
+                ComparisonConfidence.Unsupported,
+                new[] { "material utility is removed and unsupported" });
+            var safe = ComparisonOption(candidate, replaceA, DamageMetric("damage-per-use", "Damage per use", 100f, 110f, ComparisonResultClass.Exact, ComparisonConfidence.Verified));
+            var unsafeOption = ComparisonOption(
+                candidate,
+                replaceB,
+                DamageMetric("damage-per-use", "Damage per use", 100f, 150f, ComparisonResultClass.Exact, ComparisonConfidence.Verified),
+                null,
+                new[] { unsafeUtility },
+                null);
+
+            var view = ComparisonPresentationShell.BuildView(new[] { safe, unsafeOption });
+
+            AssertEqual(2, view.RankedDamageOptions.Count, "material utility ranked damage still visible");
+            AssertEqual((int)ComparisonRecommendationState.Suppressed, (int)view.RecommendationState, "material utility suppresses recommendation");
+            AssertNull(view.RecommendedOption, "material utility no overall recommendation");
+        }
+
+        private static void ValidatesBestKnownDamageStaysDistinctFromBestReplacement()
+        {
+            var candidate = ComparisonGem("Gem_Candidate", "Candidate Gem");
+            var replace = ComparisonGem("Gem_A", "Gem A");
+            var option = ComparisonOption(candidate, replace, DamageMetric("damage-per-use", "Damage per use", 100f, 130f, ComparisonResultClass.Exact, ComparisonConfidence.Verified));
+
+            var view = ComparisonPresentationShell.BuildView(new[] { option });
+
+            AssertEqual((int)ComparisonRecommendationState.Recommended, (int)view.RecommendationState, "best known damage recommendation state");
+            AssertEqual("Best known damage improvement", view.RecommendationText, "best known damage recommendation label");
+            AssertFalse(string.Equals("Best replacement", view.RecommendationText, StringComparison.Ordinal), "best known damage not best replacement");
+        }
+
+        private static void ValidatesObservedPackageContextDoesNotAffectGemRanking()
+        {
+            var player = Local("local-observed-ranking");
+            var memoryLow = Memory(player, "Mem_LowObserved");
+            var memoryHigh = Memory(player, "Mem_HighObserved");
+            var gemLow = Gem(player, "Gem_LowObserved");
+            var gemHigh = Gem(player, "Gem_HighObserved");
+            var candidateKey = Gem(player, "Gem_ContextualObserved");
+            var lowMemory = new MemoryState(memoryLow, memoryLow.ContentId, 0, null, 5, null, new[] { gemLow }, new[] { Structured(CommonComparisonValueIds.DamagePerHit, "Memory damage", 100f, "damage", "100", ComparisonResultClass.Exact, ComparisonConfidence.Verified) });
+            var highMemory = new MemoryState(memoryHigh, memoryHigh.ContentId, 1, null, 5, null, new[] { gemHigh }, new[] { Structured(CommonComparisonValueIds.DamagePerHit, "Memory damage", 100f, "damage", "100", ComparisonResultClass.Exact, ComparisonConfidence.Verified) });
+            var lowGem = new GemState(gemLow, gemLow.ContentId, 100f, memoryLow, new[] { Structured(CommonComparisonValueIds.DamageModifier, "Damage modifier", 0f, "multiplier", "0", ComparisonResultClass.Derived, ComparisonConfidence.HighConfidence) });
+            var highGem = new GemState(gemHigh, gemHigh.ContentId, 100f, memoryHigh, new[] { Structured(CommonComparisonValueIds.DamageModifier, "Damage modifier", 0.1f, "multiplier", "+10%", ComparisonResultClass.Derived, ComparisonConfidence.HighConfidence) });
+            var candidate = new GemState(candidateKey, candidateKey.ContentId, 100f, null, new[] { Structured(CommonComparisonValueIds.DamageModifier, "Damage modifier", 0.5f, "multiplier", "+50%", ComparisonResultClass.Derived, ComparisonConfidence.HighConfidence) });
+            var build = new BuildStateSnapshot(player, "Traveler_Primus", null, new[] { lowMemory, highMemory }, new[] { lowGem, highGem }, null, 1f);
+            var run = RunSnapshotWithObservedRows(player, memoryHigh, gemHigh, 100f, 0f, 10000f, 10000f);
+            var service = new LiveCandidateComparisonService();
+
+            var snapshot = service.RefreshGemCandidate(
+                build,
+                candidate,
+                new[]
+                {
+                    new LiveGemReplacementTarget(lowGem, lowMemory, 0),
+                    new LiveGemReplacementTarget(highGem, highMemory, 0)
+                },
+                false,
+                2f,
+                run);
+            var view = ComparisonPresentationShell.BuildView(snapshot.Comparisons);
+
+            AssertEqual(gemLow.StableId, view.RankedDamageOptions[0].Comparison.ReplacementTarget.Value.StableId, "observed package not used for ranking");
+            AssertApproximately(50f, Require(snapshot.Comparisons[0].PrimaryDamageDelta.DeltaValue, "observed ranking low delta"), "observed ranking low projected delta");
+            AssertApproximately(40f, Require(snapshot.Comparisons[1].PrimaryDamageDelta.DeltaValue, "observed ranking high delta"), "observed ranking high projected delta");
+            AssertEqual(0, snapshot.Comparisons[0].ObservedContext.Count, "observed ranking low no context");
+            AssertEqual(2, snapshot.Comparisons[1].ObservedContext.Count, "observed ranking high context separate");
+            AssertEqual("observed.current-memory-package", snapshot.Comparisons[1].ObservedContext[1].MetricId, "observed ranking package context separate");
+        }
+
         private static void ValidatesLiveCandidateComparisonAddsObservedRunContextFromSnapshotsOnly()
         {
             var player = Local("local-observed");
@@ -2279,7 +2716,8 @@ namespace ShapeOfDreams.DamageAnalyzer
             AssertEqual("420 damage (70% run)", option.ObservedContext[1].TextValue, "live observed memory package text");
             AssertEqual(1, view.RankedDamageOptions.Count, "live observed ranking unchanged");
             AssertEqual(2, view.RankedDamageOptions[0].ObservedContextRows.Count, "live observed presentation count");
-            AssertEqual(1, view.RankedDamageOptions[0].ProjectedDamageRows.Count, "live observed projected rows unchanged");
+            AssertHasPresentationMetric(view.RankedDamageOptions[0].ProjectedDamageRows, "contextual-memory-damage", "live observed contextual projected row");
+            AssertHasPresentationMetric(view.RankedDamageOptions[0].ProjectedDamageRows, "direct-damage", "live observed direct projected row");
         }
 
         private static void ValidatesLiveCandidateComparisonOmitsMissingObservedHistory()
@@ -2311,6 +2749,71 @@ namespace ShapeOfDreams.DamageAnalyzer
             AssertApproximately(30f, Require(snapshot.Comparisons[0].PrimaryDamageDelta.DeltaValue, "live missing observed projected delta"), "live missing observed projected delta");
         }
 
+        private static void ValidatesLiveCandidateComparisonPreservesNotApplicableAndUnknownRows()
+        {
+            var player = Local("local-fidelity");
+            var memoryKey = Memory(player, "Mem_Fidelity");
+            var currentGemKey = Gem(player, "Gem_CurrentFidelity");
+            var candidateGemKey = Gem(player, "Gem_CandidateFidelity");
+            var memoryState = new MemoryState(memoryKey, memoryKey.ContentId, 0, null, 2, null, new[] { currentGemKey }, null);
+            var currentGem = new GemState(
+                currentGemKey,
+                currentGemKey.ContentId,
+                100f,
+                memoryKey,
+                new[]
+                {
+                    Structured(CommonComparisonValueIds.Cooldown, "Cooldown", 0f, "s", "0", ComparisonResultClass.Exact, ComparisonConfidence.Verified),
+                    Structured(CommonComparisonValueIds.DirectDamage, "Direct damage", null, "", "N/A", ComparisonResultClass.NotApplicable, ComparisonConfidence.Verified)
+                });
+            var candidateGem = new GemState(
+                candidateGemKey,
+                candidateGemKey.ContentId,
+                110f,
+                null,
+                new[]
+                {
+                    Structured(CommonComparisonValueIds.Cooldown, "Cooldown", null, "s", "unknown", ComparisonResultClass.Unknown, ComparisonConfidence.Unknown),
+                    Structured(CommonComparisonValueIds.DirectDamage, "Direct damage", null, "", "N/A", ComparisonResultClass.NotApplicable, ComparisonConfidence.Verified)
+                });
+            var build = new BuildStateSnapshot(player, "Traveler_Primus", null, new[] { memoryState }, new[] { currentGem }, null, 1f);
+            var service = new LiveCandidateComparisonService();
+
+            var snapshot = service.RefreshGemCandidate(
+                build,
+                candidateGem,
+                new[] { new LiveGemReplacementTarget(currentGem, memoryState, 0) },
+                false,
+                2f);
+            var option = snapshot.Comparisons[0];
+            var view = ComparisonPresentationShell.BuildView(snapshot.Comparisons);
+
+            AssertEqual((int)LiveCandidateComparisonStatus.Ready, (int)snapshot.Status, "live fidelity snapshot ready");
+            AssertTrue(option.Metrics.Count >= 2, "live fidelity keeps non-numeric metric rows");
+            AssertHasMetricResultClass(option.Metrics, "direct-damage", ComparisonResultClass.NotApplicable, "live fidelity direct damage not applicable");
+            AssertHasMetricResultClass(option.Metrics, "cooldown", ComparisonResultClass.Unknown, "live fidelity cooldown unknown");
+            AssertEqual(0, view.RankedDamageOptions.Count, "live fidelity no false damage ranking");
+            AssertEqual(1, view.UnrankedOptions.Count, "live fidelity visible unranked option");
+            AssertHasPresentationState(view.UnrankedOptions[0].ProjectedDamageRows, ComparisonPresentationMetricState.NotApplicable, "live fidelity not-applicable row visible");
+            AssertHasPresentationState(view.UnrankedOptions[0].ProjectedDamageRows, ComparisonPresentationMetricState.Unknown, "live fidelity unknown row visible");
+            AssertNoKnownZeroDamageRow(view.UnrankedOptions[0].ProjectedDamageRows, "live fidelity no false known zero damage row");
+        }
+
+        private static void ValidatesChargeRegressionUsesNativeDisplayedCap()
+        {
+            var sylvanCall = CommonComparisonEvaluators.EvaluateCharges(
+                Structured(CommonComparisonValueIds.Charges, "Charges", 3f, "charges", "3", ComparisonResultClass.Exact, ComparisonConfidence.Verified),
+                Structured(CommonComparisonValueIds.Charges, "Charges", 3f, "charges", "3", ComparisonResultClass.Exact, ComparisonConfidence.Verified));
+            var pressurePoint = CommonComparisonEvaluators.EvaluateCharges(
+                Structured(CommonComparisonValueIds.Charges, "Charges", 2f, "charges", "2", ComparisonResultClass.Exact, ComparisonConfidence.Verified),
+                Structured(CommonComparisonValueIds.Charges, "Charges", 3f, "charges", "3", ComparisonResultClass.Exact, ComparisonConfidence.Verified));
+
+            AssertApproximately(3f, Require(sylvanCall.BeforeValue, "charge regression SylvanCall before"), "charge regression SylvanCall maxCharges");
+            AssertApproximately(0f, Require(sylvanCall.DeltaValue, "charge regression SylvanCall delta"), "charge regression unchanged charge delta");
+            AssertApproximately(2f, Require(pressurePoint.BeforeValue, "charge regression PressurePoint before"), "charge regression PressurePoint observed maxCharges");
+            AssertApproximately(1f, Require(pressurePoint.DeltaValue, "charge regression displayed cap delta"), "charge regression displayed cap delta");
+        }
+
         private static void ValidatesLiveCandidateMemoryComparisonKeepsSlotGemContext()
         {
             var player = Local("local-a");
@@ -2336,6 +2839,39 @@ namespace ShapeOfDreams.DamageAnalyzer
             AssertEqual(1, currentMemory.AttachedGemKeys.Count, "live memory original attached gem context unchanged");
         }
 
+        private static void ValidatesLiveCandidateMemoryComparisonIncludesEmptySlotAction()
+        {
+            var player = Local("local-empty-memory");
+            var candidateMemoryKey = Memory(player, "Mem_Candidate");
+            var candidateMemory = new MemoryState(
+                candidateMemoryKey,
+                candidateMemoryKey.ContentId,
+                -1,
+                null,
+                4,
+                null,
+                null,
+                new[] { Structured(CommonComparisonValueIds.DamagePerHit, "Damage per hit", 130f, "damage", "130", ComparisonResultClass.Exact, ComparisonConfidence.Verified) });
+            var build = new BuildStateSnapshot(player, "Traveler_Primus", null, Array.Empty<MemoryState>(), Array.Empty<GemState>(), null, 1f);
+            var service = new LiveCandidateComparisonService();
+
+            var snapshot = service.RefreshMemoryCandidate(
+                build,
+                candidateMemory,
+                new[] { new LiveMemoryReplacementTarget(CandidateEquipActionKind.EquipIntoEmptySlot, null, 2) },
+                2f);
+            var option = snapshot.Comparisons[0];
+
+            AssertEqual((int)LiveCandidateComparisonStatus.Ready, (int)snapshot.Status, "live empty memory ready");
+            AssertEqual((int)CandidateEquipActionKind.EquipIntoEmptySlot, (int)option.ActionKind, "live empty memory action kind");
+            AssertEqual(2, option.TargetSlot, "live empty memory target slot");
+            AssertNull(option.ReplacementTarget, "live empty memory removed item");
+            AssertEqual(0, option.ObservedContext.Count, "live empty memory no removed observed context");
+            AssertEqual("direct-damage", option.PrimaryDamageDelta.MetricId, "live empty memory primary damage");
+            AssertApproximately(130f, Require(option.PrimaryDamageDelta.DeltaValue, "live empty memory delta"), "live empty memory damage delta");
+            AssertEqual(0, snapshot.ContextualEvaluations[0].AttachedGemContext.Count, "live empty memory no attached gem context");
+        }
+
         private static void ValidatesLiveCandidateComparisonLifecycleClearReplaceAndDuplicateFallback()
         {
             var player = Local("local-a");
@@ -2358,7 +2894,8 @@ namespace ShapeOfDreams.DamageAnalyzer
             AssertEqual(0, cleared.Comparisons.Count, "live lifecycle clear comparisons");
             AssertEqual(0, cleared.ContextualEvaluations.Count, "live lifecycle clear evaluations");
             AssertEqual((int)LiveCandidateComparisonStatus.Unsupported, (int)duplicate.Status, "live duplicate unsupported");
-            AssertEqual(0, duplicate.Comparisons.Count, "live duplicate no recommendation options");
+            AssertEqual(1, duplicate.Comparisons.Count, "live duplicate unsupported action option");
+            AssertEqual((int)CandidateEquipActionKind.UnsupportedDuplicateMerge, (int)duplicate.Comparisons[0].ActionKind, "live duplicate unsupported action kind");
             AssertEqual(0, duplicate.ContextualEvaluations.Count, "live duplicate no contextual evaluations");
             AssertEqual((int)LiveCandidateComparisonStatus.Ready, (int)replaced.Status, "live replacement refreshed");
             AssertEqual((int)LiveCandidateComparisonCandidateKind.Memory, (int)replaced.CandidateKind, "live replacement candidate kind");
@@ -2613,6 +3150,7 @@ namespace ShapeOfDreams.DamageAnalyzer
             AssertEqual("Damage", LiveCandidateComparisonPanelPresenter.FormatStateLabel(ComparisonPresentationMetricState.Known), "live panel known state label");
             AssertEqual("Estimated", LiveCandidateComparisonPanelPresenter.FormatStateLabel(ComparisonPresentationMetricState.Estimated), "live panel estimated state label");
             AssertEqual("Utility", LiveCandidateComparisonPanelPresenter.FormatStateLabel(ComparisonPresentationMetricState.Utility), "live panel utility state label");
+            AssertEqual("N/A", LiveCandidateComparisonPanelPresenter.FormatStateLabel(ComparisonPresentationMetricState.NotApplicable), "live panel not-applicable state label");
             AssertEqual("Unknown", LiveCandidateComparisonPanelPresenter.FormatStateLabel(ComparisonPresentationMetricState.Unknown), "live panel unknown state label");
             AssertEqual("Unsupported", LiveCandidateComparisonPanelPresenter.FormatStateLabel(ComparisonPresentationMetricState.Unsupported), "live panel unsupported state label");
 
@@ -2986,6 +3524,93 @@ namespace ShapeOfDreams.DamageAnalyzer
             {
                 throw new InvalidOperationException(label + " expected true");
             }
+        }
+
+        private static void AssertHasPresentationState(IReadOnlyList<ComparisonPresentationMetricRow> rows, ComparisonPresentationMetricState expected, string label)
+        {
+            if (rows != null)
+            {
+                for (var i = 0; i < rows.Count; i++)
+                {
+                    if (rows[i] != null && rows[i].State == expected)
+                    {
+                        return;
+                    }
+                }
+            }
+
+            throw new InvalidOperationException(label + " expected state " + expected);
+        }
+
+        private static void AssertHasPresentationMetric(IReadOnlyList<ComparisonPresentationMetricRow> rows, string metricId, string label)
+        {
+            if (rows != null)
+            {
+                for (var i = 0; i < rows.Count; i++)
+                {
+                    if (rows[i] != null && string.Equals(rows[i].MetricId, metricId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return;
+                    }
+                }
+            }
+
+            throw new InvalidOperationException(label + " expected metric " + metricId);
+        }
+
+        private static void AssertNoKnownZeroDamageRow(IReadOnlyList<ComparisonPresentationMetricRow> rows, string label)
+        {
+            if (rows == null)
+            {
+                return;
+            }
+
+            for (var i = 0; i < rows.Count; i++)
+            {
+                var row = rows[i];
+                if (row != null
+                    && row.State == ComparisonPresentationMetricState.Known
+                    && row.MetricId.IndexOf("damage", StringComparison.OrdinalIgnoreCase) >= 0
+                    && row.BeforeText.StartsWith("0", StringComparison.Ordinal)
+                    && row.AfterText.StartsWith("0", StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException(label + " found " + row.MetricId);
+                }
+            }
+        }
+
+        private static void AssertHasMetric(IReadOnlyList<ComparisonMetric> metrics, string metricId, string label)
+        {
+            if (metrics != null)
+            {
+                for (var i = 0; i < metrics.Count; i++)
+                {
+                    if (metrics[i] != null && string.Equals(metrics[i].MetricId, metricId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return;
+                    }
+                }
+            }
+
+            throw new InvalidOperationException(label + " expected metric " + metricId);
+        }
+
+        private static void AssertHasMetricResultClass(IReadOnlyList<ComparisonMetric> metrics, string metricId, ComparisonResultClass resultClass, string label)
+        {
+            if (metrics != null)
+            {
+                for (var i = 0; i < metrics.Count; i++)
+                {
+                    if (metrics[i] != null
+                        && string.Equals(metrics[i].MetricId, metricId, StringComparison.OrdinalIgnoreCase)
+                        && metrics[i].ResultClass == resultClass)
+                    {
+                        return;
+                    }
+                }
+            }
+
+            throw new InvalidOperationException(label + " expected metric " + metricId + " with result class " + resultClass);
         }
 
         private static void AssertNull(object value, string label)

@@ -8,6 +8,7 @@
     <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>
 
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
     <AssemblyTitle>Damage Analyzer</AssemblyTitle>
     <AssemblyName>DamageAnalyzer</AssemblyName>
     <AssemblyProduct>Shape of Dreams Damage Analyzer</AssemblyProduct>

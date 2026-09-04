@@ -21,6 +21,7 @@ namespace ShapeOfDreams.DamageAnalyzer
         private const int ParentChainLimit = 8;
         private const int NumericFieldLimit = 24;
         private const int BucketDisplayLimit = 16;
+        private const int PlayerIdentityDiagnosticLimit = 12;
 
         private static ClientEventManager _damageManager;
         private static ClientEventManager _heroLifecycleManager;
@@ -30,6 +31,7 @@ namespace ShapeOfDreams.DamageAnalyzer
         private static int _roomDamageLogCount;
         private static int _roomHeroCombatTransitions;
         private static bool _reportedDamageLimit;
+        private static int _playerIdentityDiagnosticCount;
         private static string _currentRoom = "none";
         private static readonly Dictionary<string, DamageBucket> DamageByOwner = new Dictionary<string, DamageBucket>();
         private static readonly Dictionary<string, DamageBucket> DamageByClass = new Dictionary<string, DamageBucket>();
@@ -54,6 +56,7 @@ namespace ShapeOfDreams.DamageAnalyzer
 
             DamageAnalyticsUiVisibility.MarkNonGameplay();
             Log("diagnostics enabled");
+            LogBuildIdentity();
 #if DEBUG
             DamageAnalyticsCoreValidation.RunAll();
             MemoryGemStateDiagnosticsValidation.RunAll();
@@ -67,6 +70,17 @@ namespace ShapeOfDreams.DamageAnalyzer
             LiveCandidateComparisonPanel.EnsureCreated();
             TrySubscribeExistingDamageManager();
             LogHasteConfigSnapshot("initialize");
+        }
+
+        private static void LogBuildIdentity()
+        {
+            var assembly = typeof(DamageAnalyzerDiagnostics).Assembly;
+            var name = assembly.GetName();
+            Log(
+                "build-identity " +
+                $"assembly={name.Name} " +
+                $"version={name.Version} " +
+                $"moduleVersionId={assembly.ManifestModule.ModuleVersionId}");
         }
 
         internal static void Shutdown()
@@ -111,6 +125,7 @@ namespace ShapeOfDreams.DamageAnalyzer
             _roomDamageLogCount = 0;
             _roomHeroCombatTransitions = 0;
             _reportedDamageLimit = false;
+            _playerIdentityDiagnosticCount = 0;
             _currentRoom = "none";
             DamageByOwner.Clear();
             DamageByClass.Clear();
@@ -639,6 +654,7 @@ namespace ShapeOfDreams.DamageAnalyzer
             var targetKind = ClassifyTarget(victim);
             var eligibility = ClassifyEligibility(owner, victim, targetKind);
             var procCandidateKey = FormatProcCandidateKey(damageClass, actor, abilityGem, memory, caster);
+            UpdateConfirmedSoloPlayerMode();
             var playerKey = ResolvePlayerKey(owner);
             var targetRelationship = MapTargetRelationship(eligibility, targetKind);
             var sourceCategory = MapSourceCategory(damageClass);
@@ -647,6 +663,7 @@ namespace ShapeOfDreams.DamageAnalyzer
             var gemKey = ResolveGemKey(sourceCategory, playerKey, abilityGem != null ? (Actor)abilityGem : actorGem != null ? (Actor)actorGem : actor);
             var originatingMemoryKey = ResolveOriginatingMemoryKey(sourceCategory, playerKey, memory);
             var record = _analytics.CaptureDamage(Time.time, info.damage.amount, playerKey, targetRelationship, sourceKey, memoryKey, gemKey, originatingMemoryKey);
+            LogRejectedPlayerIdentityIfNeeded(owner, playerKey, actor, victim, targetKind, eligibility, damageClass);
 
             _roomDamageLogCount++;
 
@@ -1055,7 +1072,7 @@ namespace ShapeOfDreams.DamageAnalyzer
                     continue;
                 }
 
-                parts.Add($"{i}:cooldown={FormatFloat(config.cooldownTime)},charges={config.maxCharges}+{config.addedCharges},mana={FormatFloat(config.manaCost)},range={FormatFloat(config.effectiveRange)}");
+                parts.Add($"{i}:cooldown={FormatFloat(config.cooldownTime)},charges={config.maxCharges},addedCharges={config.addedCharges},mana={FormatFloat(config.manaCost)},range={FormatFloat(config.effectiveRange)}");
             }
 
             return parts.Count == 0 ? "none" : string.Join("; ", parts);
@@ -1782,6 +1799,16 @@ namespace ShapeOfDreams.DamageAnalyzer
                 return null;
             }
 
+            if (!IsTrackedGamePlayer(player))
+            {
+                return null;
+            }
+
+            return BuildPlayerKey(player);
+        }
+
+        private static PlayerKey BuildPlayerKey(DewPlayer player)
+        {
             var stableId = !string.IsNullOrEmpty(player.guid) ? player.guid : player.playerNameRaw;
             if (string.IsNullOrEmpty(stableId))
             {
@@ -1789,6 +1816,87 @@ namespace ShapeOfDreams.DamageAnalyzer
             }
 
             return new PlayerKey(stableId, player == DewPlayer.local);
+        }
+
+        private static bool IsTrackedGamePlayer(DewPlayer player)
+        {
+            if (player == null)
+            {
+                return false;
+            }
+
+            if (player == DewPlayer.local)
+            {
+                return true;
+            }
+
+            var gamePlayers = DewPlayer.gamePlayers;
+            if (gamePlayers == null)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < gamePlayers.Count; i++)
+            {
+                if (gamePlayers[i] == player)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static void UpdateConfirmedSoloPlayerMode()
+        {
+            var local = DewPlayer.local;
+            var gamePlayers = DewPlayer.gamePlayers;
+            if (local != null && gamePlayers != null && gamePlayers.Count == 1 && gamePlayers[0] == local)
+            {
+                _analytics.SetConfirmedSoloPlayer(BuildPlayerKey(local));
+                return;
+            }
+
+            _analytics.SetConfirmedSoloPlayer(null);
+        }
+
+        private static void LogRejectedPlayerIdentityIfNeeded(
+            DewPlayer owner,
+            PlayerKey? proposedPlayerKey,
+            Actor actor,
+            Entity victim,
+            string targetKind,
+            string eligibility,
+            string damageClass)
+        {
+            if (owner == null || proposedPlayerKey.HasValue)
+            {
+                return;
+            }
+
+            if (targetKind != "MONSTER" && eligibility != "PLAYER_TO_MONSTER")
+            {
+                return;
+            }
+
+            if (_playerIdentityDiagnosticCount >= PlayerIdentityDiagnosticLimit)
+            {
+                return;
+            }
+
+            _playerIdentityDiagnosticCount++;
+            Log(
+                "player-identity-rejected " +
+                $"reason=owner-not-tracked-game-player " +
+                $"diagnosticIndex={_playerIdentityDiagnosticCount} " +
+                $"gamePlayers={SafeInt(() => DewPlayer.gamePlayers.Count)} " +
+                $"owner={FormatPlayer(owner)} " +
+                $"local={FormatPlayer(DewPlayer.local)} " +
+                $"targetKind={targetKind} " +
+                $"eligibility={eligibility} " +
+                $"class={damageClass} " +
+                $"actor={FormatObject(actor)} " +
+                $"victim={FormatObject(victim)}");
         }
 
         private static TargetRelationship MapTargetRelationship(string eligibility, string targetKind)
@@ -2692,12 +2800,8 @@ namespace ShapeOfDreams.DamageAnalyzer
                 return true;
             }
 
-            if (!DamageAnalyzerDiagnostics.Enabled || !DamageAnalyticsUiInput.IsPointerOverModPanel())
-            {
-                return true;
-            }
-
-            if (!DamageAnalyticsUiVisibility.ShouldShowAnalyticsUi())
+            if (!DamageAnalyzerDiagnostics.Enabled
+                || !DamageAnalyticsUiInput.ShouldSuppressGameMouseInput(button, Input.mousePosition, Screen.height, DamageAnalyticsUiVisibility.ShouldShowAnalyticsUi()))
             {
                 return true;
             }

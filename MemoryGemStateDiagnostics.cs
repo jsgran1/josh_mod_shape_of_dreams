@@ -432,7 +432,9 @@ namespace ShapeOfDreams.DamageAnalyzer
                 }
 
                 Add(target, prefix + "cooldown", FormatFloat(config.cooldownTime));
-                Add(target, prefix + "charges", (config.maxCharges + config.addedCharges).ToString(CultureInfo.InvariantCulture));
+                Add(target, prefix + "charges", config.maxCharges.ToString(CultureInfo.InvariantCulture));
+                Add(target, prefix + "addedCharges", config.addedCharges.ToString(CultureInfo.InvariantCulture));
+                Add(target, prefix + "startCharges", config.startCharges.ToString(CultureInfo.InvariantCulture));
                 Add(target, prefix + "range", FormatFloat(config.effectiveRange));
             }
         }

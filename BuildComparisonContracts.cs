@@ -10,6 +10,7 @@ namespace ShapeOfDreams.DamageAnalyzer
         Estimated,
         StronglyInferred,
         Utility,
+        NotApplicable,
         Unknown,
         Unsupported
     }
@@ -44,6 +45,14 @@ namespace ShapeOfDreams.DamageAnalyzer
         Upgrade,
         Merge,
         Remove
+    }
+
+    internal enum CandidateEquipActionKind
+    {
+        Unknown,
+        EquipIntoEmptySlot,
+        ReplaceExisting,
+        UnsupportedDuplicateMerge
     }
 
     internal readonly struct ComparisonSubject : IEquatable<ComparisonSubject>
@@ -590,6 +599,21 @@ namespace ShapeOfDreams.DamageAnalyzer
                 ComparisonConfidence.Unsupported,
                 limitations);
         }
+
+        internal static ComparisonMetric NotApplicable(string metricId, string label, IEnumerable<string> limitations)
+        {
+            return new ComparisonMetric(
+                metricId,
+                label,
+                null,
+                null,
+                null,
+                null,
+                "",
+                ComparisonResultClass.NotApplicable,
+                ComparisonConfidence.Verified,
+                limitations);
+        }
     }
 
     internal sealed class ComparisonUtilityChange
@@ -603,6 +627,20 @@ namespace ShapeOfDreams.DamageAnalyzer
             string unit,
             ComparisonConfidence confidence,
             IEnumerable<string> limitations)
+            : this(utilityId, description, beforeValue, afterValue, deltaValue, unit, ComparisonResultClass.Utility, confidence, limitations)
+        {
+        }
+
+        internal ComparisonUtilityChange(
+            string utilityId,
+            string description,
+            float? beforeValue,
+            float? afterValue,
+            float? deltaValue,
+            string unit,
+            ComparisonResultClass resultClass,
+            ComparisonConfidence confidence,
+            IEnumerable<string> limitations)
         {
             UtilityId = string.IsNullOrEmpty(utilityId) ? "UNKNOWN_UTILITY" : utilityId;
             Description = description ?? "";
@@ -610,6 +648,7 @@ namespace ShapeOfDreams.DamageAnalyzer
             AfterValue = afterValue;
             DeltaValue = deltaValue;
             Unit = unit ?? "";
+            ResultClass = resultClass;
             Confidence = confidence;
             Limitations = ComparisonContractLists.Copy(limitations);
         }
@@ -620,10 +659,7 @@ namespace ShapeOfDreams.DamageAnalyzer
         internal float? AfterValue { get; }
         internal float? DeltaValue { get; }
         internal string Unit { get; }
-        internal ComparisonResultClass ResultClass
-        {
-            get { return ComparisonResultClass.Utility; }
-        }
+        internal ComparisonResultClass ResultClass { get; }
         internal ComparisonConfidence Confidence { get; }
         internal IReadOnlyList<string> Limitations { get; }
     }
@@ -668,9 +704,39 @@ namespace ShapeOfDreams.DamageAnalyzer
             ComparisonMetric primaryDamageDelta,
             ComparisonConfidence confidence,
             IEnumerable<string> limitations)
+            : this(
+                replacementTarget.HasValue ? CandidateEquipActionKind.ReplaceExisting : CandidateEquipActionKind.EquipIntoEmptySlot,
+                candidate,
+                replacementTarget,
+                "",
+                -1,
+                metrics,
+                utilityChanges,
+                observedContext,
+                primaryDamageDelta,
+                confidence,
+                limitations)
         {
+        }
+
+        internal BuildOptionComparison(
+            CandidateEquipActionKind actionKind,
+            ComparisonSubject candidate,
+            ComparisonSubject? replacementTarget,
+            string actionLabel,
+            int targetSlot,
+            IEnumerable<ComparisonMetric> metrics,
+            IEnumerable<ComparisonUtilityChange> utilityChanges,
+            IEnumerable<ObservedContextMetric> observedContext,
+            ComparisonMetric primaryDamageDelta,
+            ComparisonConfidence confidence,
+            IEnumerable<string> limitations)
+        {
+            ActionKind = actionKind;
             Candidate = candidate;
             ReplacementTarget = replacementTarget;
+            ActionLabel = actionLabel ?? "";
+            TargetSlot = targetSlot;
             Metrics = ComparisonContractLists.Copy(metrics);
             UtilityChanges = ComparisonContractLists.Copy(utilityChanges);
             ObservedContext = ComparisonContractLists.Copy(observedContext);
@@ -679,8 +745,11 @@ namespace ShapeOfDreams.DamageAnalyzer
             Limitations = ComparisonContractLists.Copy(limitations);
         }
 
+        internal CandidateEquipActionKind ActionKind { get; }
         internal ComparisonSubject Candidate { get; }
         internal ComparisonSubject? ReplacementTarget { get; }
+        internal string ActionLabel { get; }
+        internal int TargetSlot { get; }
         internal IReadOnlyList<ComparisonMetric> Metrics { get; }
         internal IReadOnlyList<ComparisonUtilityChange> UtilityChanges { get; }
         internal IReadOnlyList<ObservedContextMetric> ObservedContext { get; }
@@ -695,6 +764,7 @@ namespace ShapeOfDreams.DamageAnalyzer
         {
             return resultClass == ComparisonResultClass.Unknown
                 || resultClass == ComparisonResultClass.Unsupported
+                || resultClass == ComparisonResultClass.NotApplicable
                 || confidence == ComparisonConfidence.Unknown
                 || confidence == ComparisonConfidence.Unsupported;
         }
