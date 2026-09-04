@@ -1,0 +1,2 @@
+[h1]Damage Meter[/h1]
+Improve on stat display

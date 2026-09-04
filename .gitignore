@@ -1,0 +1,90 @@
+# -----------------------------------------------------------------------------
+# Build output / generated .NET artifacts
+# -----------------------------------------------------------------------------
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+artifacts/publish/
+*.dll
+*.pdb
+*.deps.json
+*.cache
+
+# NuGet / test / coverage output
+packages/
+TestResults/
+coverage/
+coverage.*
+*.coverage
+*.coveragexml
+
+# -----------------------------------------------------------------------------
+# Local diagnostic and runtime evidence
+# Raw Unity/player logs can contain local paths, account IDs, lobby IDs,
+# networking identifiers, and other machine/session-specific data.
+# -----------------------------------------------------------------------------
+artifacts/runs/
+artifacts/runtime/
+*.log
+
+# Keep explicitly curated/redacted evidence if you add it later.
+!docs/**/*.log
+
+# -----------------------------------------------------------------------------
+# Local workspace/bootstrap state
+# Contains machine-specific source/toolkit locations.
+# -----------------------------------------------------------------------------
+.agent-workspace/
+
+# -----------------------------------------------------------------------------
+# IDE/editor local state
+# Keep .vscode/settings.json if it is intentionally shared project config.
+# -----------------------------------------------------------------------------
+.vs/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+.vscode/*.local.json
+.vscode/*.user.json
+
+# -----------------------------------------------------------------------------
+# Local environments / caches
+# -----------------------------------------------------------------------------
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+node_modules/
+
+# -----------------------------------------------------------------------------
+# OS / temporary files
+# -----------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+*.tmp
+*.temp
+*.bak
+*.swp
+*~
+
+# -----------------------------------------------------------------------------
+# local files
+# -----------------------------------------------------------------------------
+.agents
+.codex
+.vscode
+AGENTS.md
+CLAUDE.md
+README.md
+scripts
+docs
