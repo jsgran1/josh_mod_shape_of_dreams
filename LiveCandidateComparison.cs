@@ -62,12 +62,19 @@ namespace ShapeOfDreams.DamageAnalyzer
     internal sealed class LiveGemReplacementTarget
     {
         internal LiveGemReplacementTarget(GemState currentGem, MemoryState memoryContext, int gemIndex)
+            : this(CandidateEquipActionKind.ReplaceExisting, currentGem, memoryContext, gemIndex)
         {
+        }
+
+        internal LiveGemReplacementTarget(CandidateEquipActionKind actionKind, GemState currentGem, MemoryState memoryContext, int gemIndex)
+        {
+            ActionKind = actionKind;
             CurrentGem = currentGem;
             MemoryContext = memoryContext;
             GemIndex = gemIndex;
         }
 
+        internal CandidateEquipActionKind ActionKind { get; }
         internal GemState CurrentGem { get; }
         internal MemoryState MemoryContext { get; }
         internal int GemIndex { get; }
@@ -76,11 +83,20 @@ namespace ShapeOfDreams.DamageAnalyzer
     internal sealed class LiveMemoryReplacementTarget
     {
         internal LiveMemoryReplacementTarget(MemoryState currentMemory)
+            : this(CandidateEquipActionKind.ReplaceExisting, currentMemory, currentMemory != null ? currentMemory.Slot : -1)
         {
-            CurrentMemory = currentMemory;
         }
 
+        internal LiveMemoryReplacementTarget(CandidateEquipActionKind actionKind, MemoryState currentMemory, int slot)
+        {
+            ActionKind = actionKind;
+            CurrentMemory = currentMemory;
+            Slot = slot;
+        }
+
+        internal CandidateEquipActionKind ActionKind { get; }
         internal MemoryState CurrentMemory { get; }
+        internal int Slot { get; }
     }
 
     internal sealed class LiveCandidateComparisonService
@@ -103,6 +119,9 @@ namespace ShapeOfDreams.DamageAnalyzer
         {
             if (duplicateMergeDetected)
             {
+                var duplicateMergeComparisons = buildState != null && candidate != null
+                    ? new[] { BuildUnsupportedDuplicateMergeComparison(candidate) }
+                    : null;
                 return SetSnapshot(new LiveCandidateComparisonSnapshot(
                     NextSequence(),
                     LiveCandidateComparisonStatus.Unsupported,
@@ -111,7 +130,7 @@ namespace ShapeOfDreams.DamageAnalyzer
                     buildState,
                     candidate,
                     null,
-                    null,
+                    duplicateMergeComparisons,
                     null,
                     capturedAt));
             }
@@ -239,26 +258,73 @@ namespace ShapeOfDreams.DamageAnalyzer
             RunDamageSnapshot runSnapshot,
             out ContextualEffectEvaluation evaluation)
         {
-            var replacement = ToSubject(target.CurrentGem);
+            var replacement = target.CurrentGem != null ? (ComparisonSubject?)ToSubject(target.CurrentGem) : null;
             var candidateSubject = ToSubject(candidate);
-            var candidateChange = new CandidateChange(BuildChangeKind.Replace, candidateSubject, replacement);
-            var attachedGems = ReplaceAttachedGem(buildState, target.MemoryContext, target.CurrentGem, candidate);
+            var isEmptySlot = target.ActionKind == CandidateEquipActionKind.EquipIntoEmptySlot || target.CurrentGem == null;
+            var candidateChange = new CandidateChange(isEmptySlot ? BuildChangeKind.Equip : BuildChangeKind.Replace, candidateSubject, replacement);
+            var currentAttachedGems = ResolveAttachedGems(buildState, target.MemoryContext);
+            var attachedGems = ApplyGemCandidate(buildState, target.MemoryContext, target.CurrentGem, candidate);
             evaluation = ContextualEffectEvaluator.Evaluate(buildState, target.MemoryContext, attachedGems, candidateChange);
-            var metrics = EvaluateStructuredMetrics(target.CurrentGem.StructuredValues, candidate.StructuredValues);
-            var utility = EvaluateStructuredUtility(target.CurrentGem.StructuredValues, candidate.StructuredValues);
-            var observedContext = BuildGemObservedContext(runSnapshot, buildState.PlayerKey, target.CurrentGem.GemKey, target.MemoryContext != null ? (MemoryKey?)target.MemoryContext.MemoryKey : null);
+            var beforeConfiguration = BuildContextualGemConfigurationValues(target.MemoryContext, currentAttachedGems, HasDamageModifier(currentAttachedGems) || HasDamageModifier(attachedGems), "current Gem configuration");
+            var afterConfiguration = BuildContextualGemConfigurationValues(target.MemoryContext, attachedGems, HasDamageModifier(currentAttachedGems) || HasDamageModifier(attachedGems), "candidate Gem configuration");
+            var metrics = MergeMetricRows(
+                EvaluateStructuredMetrics(beforeConfiguration, afterConfiguration),
+                isEmptySlot ? EvaluateDirectGemMetrics(BuildEmptySlotBaselineValues(candidate.StructuredValues), candidate.StructuredValues) : EvaluateDirectGemMetrics(target.CurrentGem.StructuredValues, candidate.StructuredValues));
+            var utility = EvaluateStructuredUtility(beforeConfiguration, afterConfiguration);
+            var observedContext = !isEmptySlot
+                ? BuildGemObservedContext(runSnapshot, buildState.PlayerKey, target.CurrentGem.GemKey, target.MemoryContext != null ? (MemoryKey?)target.MemoryContext.MemoryKey : null)
+                : Array.Empty<ObservedContextMetric>();
             var limitations = ComparisonSemantics.CopyLimitations(evaluation.Limitations);
-            var primary = ResolvePrimaryDamageMetric(metrics, "Gem replacement damage impact is unknown");
+            limitations.Add(isEmptySlot
+                ? "Gem empty-slot action compares the affected Memory with current attached Gems versus the same Memory with the candidate Gem added; no item is removed"
+                : "Gem replacement compares the affected Memory with current attached Gems versus the same Memory with the candidate Gem");
+            var primary = ResolvePrimaryDamageMetric(metrics, isEmptySlot ? "Gem empty-slot damage impact is unknown" : "Gem replacement damage impact is unknown");
 
             return new BuildOptionComparison(
+                isEmptySlot ? CandidateEquipActionKind.EquipIntoEmptySlot : CandidateEquipActionKind.ReplaceExisting,
                 candidateSubject,
                 replacement,
+                isEmptySlot ? "Equip into empty Gem slot" : "Replace existing Gem",
+                target.GemIndex,
                 metrics,
                 utility,
                 observedContext,
                 primary,
                 ComparisonSemantics.MostConservative(evaluation.Confidence, primary != null ? primary.Confidence : ComparisonConfidence.Unknown),
                 limitations);
+        }
+
+        private static BuildOptionComparison BuildUnsupportedDuplicateMergeComparison(GemState candidate)
+        {
+            var candidateSubject = ToSubject(candidate);
+            var primary = ComparisonMetric.Unsupported(
+                "duplicate-gem-merge",
+                "Duplicate Gem merge",
+                new[] { "duplicate Gem merge projection is unsupported until the correlated merge path is validated" });
+            return new BuildOptionComparison(
+                CandidateEquipActionKind.UnsupportedDuplicateMerge,
+                candidateSubject,
+                null,
+                "Unsupported duplicate Gem merge",
+                -1,
+                new[] { primary },
+                new[]
+                {
+                    new ComparisonUtilityChange(
+                        CommonComparisonValueIds.MaterialUtilityPrefix + "duplicate-merge",
+                        "Duplicate Gem merge result is unsupported",
+                        null,
+                        null,
+                        null,
+                        "",
+                        ComparisonResultClass.Unsupported,
+                        ComparisonConfidence.Unsupported,
+                        primary.Limitations)
+                },
+                null,
+                primary,
+                ComparisonConfidence.Unsupported,
+                primary.Limitations);
         }
 
         private BuildOptionComparison EvaluateMemoryReplacement(
@@ -268,30 +334,39 @@ namespace ShapeOfDreams.DamageAnalyzer
             RunDamageSnapshot runSnapshot,
             out ContextualEffectEvaluation evaluation)
         {
-            var replacement = ToSubject(target.CurrentMemory);
+            var replacement = target.CurrentMemory != null ? (ComparisonSubject?)ToSubject(target.CurrentMemory) : null;
             var candidateSubject = ToSubject(candidate);
-            var candidateChange = new CandidateChange(BuildChangeKind.Replace, candidateSubject, replacement);
-            var attachedGems = ResolveAttachedGems(buildState, target.CurrentMemory);
+            var isEmptySlot = target.ActionKind == CandidateEquipActionKind.EquipIntoEmptySlot || target.CurrentMemory == null;
+            var candidateChange = new CandidateChange(isEmptySlot ? BuildChangeKind.Equip : BuildChangeKind.Replace, candidateSubject, replacement);
+            var attachedGems = isEmptySlot ? Array.Empty<GemState>() : ResolveAttachedGems(buildState, target.CurrentMemory);
             var projectedCandidate = new MemoryState(
                 candidate.MemoryKey,
                 candidate.ContentId,
-                target.CurrentMemory.Slot,
+                isEmptySlot ? target.Slot : target.CurrentMemory.Slot,
                 candidate.Rank,
                 candidate.Level,
                 candidate.Quality,
-                target.CurrentMemory.AttachedGemKeys,
+                isEmptySlot ? Array.Empty<GemKey>() : target.CurrentMemory.AttachedGemKeys,
                 candidate.StructuredValues);
             evaluation = ContextualEffectEvaluator.Evaluate(buildState, projectedCandidate, attachedGems, candidateChange);
-            var metrics = EvaluateStructuredMetrics(target.CurrentMemory.StructuredValues, candidate.StructuredValues);
-            var utility = EvaluateStructuredUtility(target.CurrentMemory.StructuredValues, candidate.StructuredValues);
-            var observedContext = BuildMemoryObservedContext(runSnapshot, buildState.PlayerKey, target.CurrentMemory.MemoryKey);
+            var beforeValues = isEmptySlot ? BuildEmptySlotBaselineValues(candidate.StructuredValues) : target.CurrentMemory.StructuredValues;
+            var metrics = EvaluateStructuredMetrics(beforeValues, candidate.StructuredValues);
+            var utility = isEmptySlot
+                ? EvaluateStructuredUtility(Array.Empty<ComparisonStructuredValue>(), candidate.StructuredValues)
+                : EvaluateStructuredUtility(beforeValues, candidate.StructuredValues);
+            var observedContext = !isEmptySlot ? BuildMemoryObservedContext(runSnapshot, buildState.PlayerKey, target.CurrentMemory.MemoryKey) : Array.Empty<ObservedContextMetric>();
             var limitations = ComparisonSemantics.CopyLimitations(evaluation.Limitations);
-            limitations.Add("Memory replacement keeps the target slot's attached Gem context");
-            var primary = ResolvePrimaryDamageMetric(metrics, "Memory replacement damage impact is unknown");
+            limitations.Add(isEmptySlot
+                ? "Memory empty-slot action equips the candidate into an empty legal slot; no item or attached utility is removed"
+                : "Memory replacement keeps the target slot's attached Gem context");
+            var primary = ResolvePrimaryDamageMetric(metrics, isEmptySlot ? "Memory empty-slot damage impact is unknown" : "Memory replacement damage impact is unknown");
 
             return new BuildOptionComparison(
+                isEmptySlot ? CandidateEquipActionKind.EquipIntoEmptySlot : CandidateEquipActionKind.ReplaceExisting,
                 candidateSubject,
                 replacement,
+                isEmptySlot ? "Equip into empty Memory slot" : "Replace existing Memory",
+                isEmptySlot ? target.Slot : target.CurrentMemory.Slot,
                 metrics,
                 utility,
                 observedContext,
@@ -459,17 +534,37 @@ namespace ShapeOfDreams.DamageAnalyzer
             IReadOnlyList<ComparisonStructuredValue> afterValues)
         {
             var metrics = new List<ComparisonMetric>();
-            AddMetric(metrics, CommonComparisonEvaluators.EvaluateDirectDamage(
-                FindValue(beforeValues, CommonComparisonValueIds.DirectDamage, CommonComparisonValueIds.DamagePerHit, CommonComparisonValueIds.BaseDamage),
-                FindValue(afterValues, CommonComparisonValueIds.DirectDamage, CommonComparisonValueIds.DamagePerHit, CommonComparisonValueIds.BaseDamage)));
-            AddMetric(metrics, CommonComparisonEvaluators.EvaluateActivationDamage(
-                FindValue(beforeValues, CommonComparisonValueIds.DamagePerHit, CommonComparisonValueIds.DirectDamage, CommonComparisonValueIds.BaseDamage),
-                FindValue(afterValues, CommonComparisonValueIds.DamagePerHit, CommonComparisonValueIds.DirectDamage, CommonComparisonValueIds.BaseDamage),
-                FindValue(beforeValues, CommonComparisonValueIds.HitCount),
-                FindValue(afterValues, CommonComparisonValueIds.HitCount)));
-            AddMetric(metrics, CommonComparisonEvaluators.EvaluateCooldown(
-                FindValue(beforeValues, CommonComparisonValueIds.Cooldown),
-                FindValue(afterValues, CommonComparisonValueIds.Cooldown)));
+            var beforeContextualDamage = FindValue(beforeValues, CommonComparisonValueIds.ContextualMemoryDamage);
+            var afterContextualDamage = FindValue(afterValues, CommonComparisonValueIds.ContextualMemoryDamage);
+            AddMetricIfPresent(metrics, beforeContextualDamage, afterContextualDamage, CommonComparisonEvaluators.EvaluateContextualMemoryDamage(beforeContextualDamage, afterContextualDamage));
+
+            var beforeDamageModifier = FindValue(beforeValues, CommonComparisonValueIds.DamageModifier);
+            var afterDamageModifier = FindValue(afterValues, CommonComparisonValueIds.DamageModifier);
+            AddMetricIfPresent(metrics, beforeDamageModifier, afterDamageModifier, CommonComparisonEvaluators.EvaluateDamageModifier(beforeDamageModifier, afterDamageModifier));
+
+            var beforeDamage = FindValue(beforeValues, CommonComparisonValueIds.DirectDamage, CommonComparisonValueIds.DamagePerHit);
+            var afterDamage = FindValue(afterValues, CommonComparisonValueIds.DirectDamage, CommonComparisonValueIds.DamagePerHit);
+            AddMetricIfPresent(metrics, beforeDamage, afterDamage, CommonComparisonEvaluators.EvaluateDirectDamage(beforeDamage, afterDamage));
+
+            var beforeBaseDamage = FindValue(beforeValues, CommonComparisonValueIds.BaseDamage);
+            var afterBaseDamage = FindValue(afterValues, CommonComparisonValueIds.BaseDamage);
+            AddMetricIfPresent(metrics, beforeBaseDamage, afterBaseDamage, CommonComparisonEvaluators.EvaluateBaseDamage(beforeBaseDamage, afterBaseDamage));
+
+            var beforeHits = FindValue(beforeValues, CommonComparisonValueIds.HitCount);
+            var afterHits = FindValue(afterValues, CommonComparisonValueIds.HitCount);
+            AddMetricIfPresent(metrics, beforeHits, afterHits, CommonComparisonEvaluators.EvaluateHitCount(beforeHits, afterHits));
+            if (beforeHits != null || afterHits != null)
+            {
+                AddMetricIfPresent(metrics, beforeDamage ?? beforeHits, afterDamage ?? afterHits, CommonComparisonEvaluators.EvaluateActivationDamage(
+                    beforeDamage,
+                    afterDamage,
+                    beforeHits,
+                    afterHits));
+            }
+
+            var beforeCooldown = FindValue(beforeValues, CommonComparisonValueIds.Cooldown);
+            var afterCooldown = FindValue(afterValues, CommonComparisonValueIds.Cooldown);
+            AddMetricIfPresent(metrics, beforeCooldown, afterCooldown, CommonComparisonEvaluators.EvaluateCooldown(beforeCooldown, afterCooldown));
 
             AddStatMetricIfPresent(metrics, beforeValues, afterValues, CommonComparisonValueIds.AttackDamage);
             AddStatMetricIfPresent(metrics, beforeValues, afterValues, CommonComparisonValueIds.AbilityPower);
@@ -482,18 +577,222 @@ namespace ShapeOfDreams.DamageAnalyzer
             return metrics.AsReadOnly();
         }
 
+        private static IReadOnlyList<ComparisonMetric> EvaluateDirectGemMetrics(
+            IReadOnlyList<ComparisonStructuredValue> beforeValues,
+            IReadOnlyList<ComparisonStructuredValue> afterValues)
+        {
+            var metrics = new List<ComparisonMetric>();
+            var beforeDamage = FindValue(beforeValues, CommonComparisonValueIds.DirectDamage, CommonComparisonValueIds.DamagePerHit);
+            var afterDamage = FindValue(afterValues, CommonComparisonValueIds.DirectDamage, CommonComparisonValueIds.DamagePerHit);
+            AddMetricIfPresent(metrics, beforeDamage, afterDamage, CommonComparisonEvaluators.EvaluateDirectDamage(beforeDamage, afterDamage));
+
+            var beforeCooldown = FindValue(beforeValues, CommonComparisonValueIds.Cooldown);
+            var afterCooldown = FindValue(afterValues, CommonComparisonValueIds.Cooldown);
+            AddMetricIfPresent(metrics, beforeCooldown, afterCooldown, CommonComparisonEvaluators.EvaluateCooldown(beforeCooldown, afterCooldown));
+            return metrics.AsReadOnly();
+        }
+
+        private static IReadOnlyList<ComparisonMetric> MergeMetricRows(
+            IReadOnlyList<ComparisonMetric> primaryRows,
+            IReadOnlyList<ComparisonMetric> secondaryRows)
+        {
+            var merged = new List<ComparisonMetric>();
+            AddMetricRows(merged, primaryRows);
+            AddMetricRows(merged, secondaryRows);
+            return merged.AsReadOnly();
+        }
+
+        private static void AddMetricRows(List<ComparisonMetric> target, IReadOnlyList<ComparisonMetric> rows)
+        {
+            if (target == null || rows == null)
+            {
+                return;
+            }
+
+            for (var i = 0; i < rows.Count; i++)
+            {
+                AddMetric(target, rows[i]);
+            }
+        }
+
         private static IReadOnlyList<ComparisonUtilityChange> EvaluateStructuredUtility(
             IReadOnlyList<ComparisonStructuredValue> beforeValues,
             IReadOnlyList<ComparisonStructuredValue> afterValues)
         {
             var utility = new List<ComparisonUtilityChange>();
-            AddUtility(utility, CommonComparisonEvaluators.EvaluateCharges(
-                FindValue(beforeValues, CommonComparisonValueIds.Charges),
-                FindValue(afterValues, CommonComparisonValueIds.Charges)));
-            AddUtility(utility, CommonComparisonEvaluators.EvaluateRadiusAreaOrRange(
-                FindValue(beforeValues, CommonComparisonValueIds.Radius, CommonComparisonValueIds.Area, CommonComparisonValueIds.Range),
-                FindValue(afterValues, CommonComparisonValueIds.Radius, CommonComparisonValueIds.Area, CommonComparisonValueIds.Range)));
+            var beforeCharges = FindValue(beforeValues, CommonComparisonValueIds.Charges);
+            var afterCharges = FindValue(afterValues, CommonComparisonValueIds.Charges);
+            AddUtilityIfPresent(utility, beforeCharges, afterCharges, CommonComparisonEvaluators.EvaluateCharges(beforeCharges, afterCharges));
+
+            var beforeRangeArea = FindValue(beforeValues, CommonComparisonValueIds.Radius, CommonComparisonValueIds.Area, CommonComparisonValueIds.Range);
+            var afterRangeArea = FindValue(afterValues, CommonComparisonValueIds.Radius, CommonComparisonValueIds.Area, CommonComparisonValueIds.Range);
+            AddUtilityIfPresent(utility, beforeRangeArea, afterRangeArea, CommonComparisonEvaluators.EvaluateRadiusAreaOrRange(beforeRangeArea, afterRangeArea));
+            AddMaterialUtilityRows(utility, beforeValues, afterValues);
             return utility.AsReadOnly();
+        }
+
+        private static IReadOnlyList<ComparisonStructuredValue> BuildEmptySlotBaselineValues(
+            IReadOnlyList<ComparisonStructuredValue> candidateValues)
+        {
+            var values = new List<ComparisonStructuredValue>();
+            if (candidateValues == null)
+            {
+                return values.AsReadOnly();
+            }
+
+            for (var i = 0; i < candidateValues.Count; i++)
+            {
+                var value = candidateValues[i];
+                if (value == null || !value.NumericValue.HasValue || !IsEmptySlotBaselineValue(value.ValueId))
+                {
+                    continue;
+                }
+
+                values.Add(new ComparisonStructuredValue(
+                    value.ValueId,
+                    value.Label,
+                    0f,
+                    value.Unit,
+                    "0",
+                    value.ResultClass,
+                    value.Confidence,
+                    new[] { "empty slot baseline; no removed item exists" }));
+            }
+
+            return values.AsReadOnly();
+        }
+
+        private static bool IsEmptySlotBaselineValue(string valueId)
+        {
+            return string.Equals(valueId, CommonComparisonValueIds.DirectDamage, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(valueId, CommonComparisonValueIds.DamagePerHit, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(valueId, CommonComparisonValueIds.BaseDamage, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(valueId, CommonComparisonValueIds.ContextualMemoryDamage, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static void AddMaterialUtilityRows(
+            List<ComparisonUtilityChange> utility,
+            IReadOnlyList<ComparisonStructuredValue> beforeValues,
+            IReadOnlyList<ComparisonStructuredValue> afterValues)
+        {
+            var ids = new List<string>();
+            CollectMaterialUtilityIds(ids, beforeValues);
+            CollectMaterialUtilityIds(ids, afterValues);
+            for (var i = 0; i < ids.Count; i++)
+            {
+                var before = FindValue(beforeValues, ids[i]);
+                var after = FindValue(afterValues, ids[i]);
+                AddUtility(utility, BuildMaterialUtilityChange(before, after));
+            }
+        }
+
+        private static void CollectMaterialUtilityIds(List<string> ids, IReadOnlyList<ComparisonStructuredValue> values)
+        {
+            if (ids == null || values == null)
+            {
+                return;
+            }
+
+            for (var i = 0; i < values.Count; i++)
+            {
+                var value = values[i];
+                if (IsMaterialUtilityValue(value) && !ContainsOrdinal(ids, value.ValueId))
+                {
+                    ids.Add(value.ValueId);
+                }
+            }
+        }
+
+        private static ComparisonUtilityChange BuildMaterialUtilityChange(
+            ComparisonStructuredValue before,
+            ComparisonStructuredValue after)
+        {
+            var value = after ?? before;
+            var description = ResolveMaterialUtilityDescription(before, after);
+            var limitations = new List<string>();
+            ComparisonSemantics.AppendLimitations(limitations, before != null ? before.Limitations : null);
+            ComparisonSemantics.AppendLimitations(limitations, after != null ? after.Limitations : null);
+
+            if (before != null && after == null)
+            {
+                limitations.Add("material utility is removed by this action and is not quantitatively evaluated");
+                return new ComparisonUtilityChange(
+                    before.ValueId,
+                    "Lose " + description,
+                    null,
+                    null,
+                    null,
+                    "",
+                    before.ResultClass == ComparisonResultClass.Unsupported ? ComparisonResultClass.Unsupported : ComparisonResultClass.Unknown,
+                    before.ResultClass == ComparisonResultClass.Unsupported ? ComparisonConfidence.Unsupported : ComparisonConfidence.Unknown,
+                    limitations);
+            }
+
+            if (before == null && after != null)
+            {
+                limitations.Add("material utility is gained by this action and is not quantitatively evaluated");
+                return new ComparisonUtilityChange(
+                    after.ValueId,
+                    "Gain " + description,
+                    null,
+                    null,
+                    null,
+                    "",
+                    after.ResultClass,
+                    after.Confidence,
+                    limitations);
+            }
+
+            return new ComparisonUtilityChange(
+                value != null ? value.ValueId : "utility:material",
+                description,
+                before != null ? before.NumericValue : null,
+                after != null ? after.NumericValue : null,
+                before != null && after != null && before.NumericValue.HasValue && after.NumericValue.HasValue ? after.NumericValue.Value - before.NumericValue.Value : (float?)null,
+                value != null ? value.Unit : "",
+                value != null ? value.ResultClass : ComparisonResultClass.Unknown,
+                value != null ? value.Confidence : ComparisonConfidence.Unknown,
+                limitations);
+        }
+
+        private static string ResolveMaterialUtilityDescription(ComparisonStructuredValue before, ComparisonStructuredValue after)
+        {
+            var value = after ?? before;
+            if (value == null)
+            {
+                return "material utility";
+            }
+
+            if (!string.IsNullOrEmpty(value.TextValue))
+            {
+                return value.TextValue;
+            }
+
+            return string.IsNullOrEmpty(value.Label) ? value.ValueId : value.Label;
+        }
+
+        private static bool IsMaterialUtilityValue(ComparisonStructuredValue value)
+        {
+            if (value == null || string.IsNullOrEmpty(value.ValueId))
+            {
+                return false;
+            }
+
+            if (value.ValueId.StartsWith(CommonComparisonValueIds.MaterialUtilityPrefix, StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            return value.ResultClass == ComparisonResultClass.Utility
+                && !IsSupportedUtilityValueId(value.ValueId);
+        }
+
+        private static bool IsSupportedUtilityValueId(string valueId)
+        {
+            return string.Equals(valueId, CommonComparisonValueIds.Charges, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(valueId, CommonComparisonValueIds.Radius, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(valueId, CommonComparisonValueIds.Area, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(valueId, CommonComparisonValueIds.Range, StringComparison.OrdinalIgnoreCase);
         }
 
         private static void AddStatMetricIfPresent(
@@ -512,18 +811,60 @@ namespace ShapeOfDreams.DamageAnalyzer
 
         private static void AddMetric(List<ComparisonMetric> metrics, ComparisonMetric metric)
         {
-            if (metric != null && !metric.IsUnknownOrUnsupported)
+            if (metric != null)
             {
                 metrics.Add(metric);
             }
         }
 
+        private static void AddMetricIfPresent(
+            List<ComparisonMetric> metrics,
+            ComparisonStructuredValue before,
+            ComparisonStructuredValue after,
+            ComparisonMetric metric)
+        {
+            if (before != null || after != null)
+            {
+                AddMetric(metrics, metric);
+            }
+        }
+
         private static void AddUtility(List<ComparisonUtilityChange> utility, ComparisonUtilityChange change)
         {
-            if (change != null && change.Confidence != ComparisonConfidence.Unknown && change.Confidence != ComparisonConfidence.Unsupported)
+            if (change != null)
             {
                 utility.Add(change);
             }
+        }
+
+        private static void AddUtilityIfPresent(
+            List<ComparisonUtilityChange> utility,
+            ComparisonStructuredValue before,
+            ComparisonStructuredValue after,
+            ComparisonUtilityChange change)
+        {
+            if (before != null || after != null)
+            {
+                AddUtility(utility, change);
+            }
+        }
+
+        private static bool ContainsOrdinal(List<string> values, string value)
+        {
+            if (values == null)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < values.Count; i++)
+            {
+                if (string.Equals(values[i], value, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private static ComparisonMetric ResolvePrimaryDamageMetric(IReadOnlyList<ComparisonMetric> metrics, string fallbackReason)
@@ -550,6 +891,289 @@ namespace ShapeOfDreams.DamageAnalyzer
             return CommonComparisonEvaluators.WholeBuildDpsUnknown(new[] { fallbackReason });
         }
 
+        private static IReadOnlyList<ComparisonStructuredValue> BuildContextualGemConfigurationValues(
+            MemoryState memoryContext,
+            IReadOnlyList<GemState> attachedGems,
+            bool includeDamageModifier,
+            string phaseLabel)
+        {
+            var values = new List<ComparisonStructuredValue>();
+            CopySupportedContextValues(values, memoryContext != null ? memoryContext.StructuredValues : null);
+            var modifier = SumAttachedGemValue(attachedGems, CommonComparisonValueIds.DamageModifier);
+            if (includeDamageModifier)
+            {
+                if (modifier.Known)
+                {
+                    AddContextualValue(
+                        values,
+                        CommonComparisonValueIds.DamageModifier,
+                        "Damage modifier",
+                        modifier.Value,
+                        "multiplier",
+                        ComparisonResultClass.Derived,
+                        modifier.Confidence,
+                        ContextualLimitations(phaseLabel, modifier.Limitations));
+                }
+                else
+                {
+                    AddContextualUnknown(values, CommonComparisonValueIds.DamageModifier, "Damage modifier", phaseLabel + " damage modifier is unavailable");
+                }
+            }
+
+            AddContextualMemoryDamage(values, memoryContext, attachedGems, modifier, phaseLabel);
+            return values.AsReadOnly();
+        }
+
+        private static void AddContextualValue(
+            List<ComparisonStructuredValue> values,
+            string valueId,
+            string label,
+            float value,
+            string unit,
+            ComparisonResultClass resultClass,
+            ComparisonConfidence confidence,
+            IEnumerable<string> limitations)
+        {
+            if (values == null || string.IsNullOrEmpty(valueId) || float.IsNaN(value) || float.IsInfinity(value) || ContainsStructuredValue(values, valueId))
+            {
+                return;
+            }
+
+            values.Add(new ComparisonStructuredValue(
+                valueId,
+                label,
+                value,
+                unit,
+                value.ToString("0.###", CultureInfo.InvariantCulture),
+                resultClass,
+                confidence,
+                limitations));
+        }
+
+        private static void AddContextualUnknown(List<ComparisonStructuredValue> values, string valueId, string label, string limitation)
+        {
+            if (values == null || ContainsStructuredValue(values, valueId))
+            {
+                return;
+            }
+
+            values.Add(new ComparisonStructuredValue(
+                valueId,
+                label,
+                null,
+                "",
+                "Unknown",
+                ComparisonResultClass.Unknown,
+                ComparisonConfidence.Unknown,
+                new[] { limitation }));
+        }
+
+        private static bool ContainsStructuredValue(IReadOnlyList<ComparisonStructuredValue> values, string valueId)
+        {
+            if (values == null)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < values.Count; i++)
+            {
+                if (values[i] != null && string.Equals(values[i].ValueId, valueId, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static void CopySupportedContextValues(List<ComparisonStructuredValue> target, IReadOnlyList<ComparisonStructuredValue> values)
+        {
+            if (target == null || values == null)
+            {
+                return;
+            }
+
+            for (var i = 0; i < values.Count; i++)
+            {
+                var value = values[i];
+                if (value == null || string.Equals(value.ValueId, CommonComparisonValueIds.DirectDamage, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(value.ValueId, CommonComparisonValueIds.DamagePerHit, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(value.ValueId, CommonComparisonValueIds.BaseDamage, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (!ContainsStructuredValue(target, value.ValueId))
+                {
+                    target.Add(value);
+                }
+            }
+        }
+
+        private static void AddContextualMemoryDamage(
+            List<ComparisonStructuredValue> values,
+            MemoryState memoryContext,
+            IReadOnlyList<GemState> attachedGems,
+            NumericAggregate modifier,
+            string phaseLabel)
+        {
+            var memoryDamage = FindValue(
+                memoryContext != null ? memoryContext.StructuredValues : null,
+                CommonComparisonValueIds.DirectDamage,
+                CommonComparisonValueIds.DamagePerHit,
+                CommonComparisonValueIds.BaseDamage);
+            var directGemDamage = SumAttachedGemValue(attachedGems, CommonComparisonValueIds.DirectDamage, CommonComparisonValueIds.DamagePerHit);
+
+            if (!IsKnownNumeric(memoryDamage) && !directGemDamage.Seen)
+            {
+                return;
+            }
+
+            if (!IsKnownNumeric(memoryDamage) && !directGemDamage.Known)
+            {
+                if (memoryDamage != null || directGemDamage.Seen)
+                {
+                    AddContextualUnknown(values, CommonComparisonValueIds.ContextualMemoryDamage, "Contextual Memory damage", phaseLabel + " damage inputs are unavailable");
+                }
+
+                return;
+            }
+
+            var limitations = ContextualLimitations(phaseLabel, null);
+            var confidence = ComparisonConfidence.Verified;
+            var memoryDamageValue = 0f;
+            if (IsKnownNumeric(memoryDamage))
+            {
+                memoryDamageValue = memoryDamage.NumericValue.Value;
+                confidence = ComparisonSemantics.MostConservative(confidence, memoryDamage.Confidence);
+                ComparisonSemantics.AppendLimitations(limitations, memoryDamage.Limitations);
+            }
+
+            if (modifier.Seen)
+            {
+                if (!modifier.Known)
+                {
+                    AddContextualUnknown(values, CommonComparisonValueIds.ContextualMemoryDamage, "Contextual Memory damage", phaseLabel + " damage modifier is unavailable");
+                    return;
+                }
+
+                memoryDamageValue *= 1f + modifier.Value;
+                confidence = ComparisonSemantics.MostConservative(confidence, modifier.Confidence);
+                ComparisonSemantics.AppendLimitations(limitations, modifier.Limitations);
+                limitations.Add("explicit damage-modifier values are applied additively to the parent Memory damage");
+            }
+
+            if (directGemDamage.Seen)
+            {
+                if (!directGemDamage.Known)
+                {
+                    AddContextualUnknown(values, CommonComparisonValueIds.ContextualMemoryDamage, "Contextual Memory damage", phaseLabel + " direct Gem damage is unavailable");
+                    return;
+                }
+
+                memoryDamageValue += directGemDamage.Value;
+                confidence = ComparisonSemantics.MostConservative(confidence, directGemDamage.Confidence);
+                ComparisonSemantics.AppendLimitations(limitations, directGemDamage.Limitations);
+                limitations.Add("direct Gem damage is included only from structured direct-damage values, not observed package history");
+            }
+
+            AddContextualValue(
+                values,
+                CommonComparisonValueIds.ContextualMemoryDamage,
+                "Contextual Memory damage",
+                memoryDamageValue,
+                "damage",
+                ComparisonResultClass.Derived,
+                confidence,
+                limitations);
+        }
+
+        private static bool HasDamageModifier(IReadOnlyList<GemState> gems)
+        {
+            return SumAttachedGemValue(gems, CommonComparisonValueIds.DamageModifier).Seen;
+        }
+
+        private static NumericAggregate SumAttachedGemValue(IReadOnlyList<GemState> gems, params string[] valueIds)
+        {
+            var aggregate = NumericAggregate.Empty;
+            if (gems == null)
+            {
+                return aggregate;
+            }
+
+            for (var i = 0; i < gems.Count; i++)
+            {
+                var value = FindValue(gems[i].StructuredValues, valueIds);
+                if (value == null || value.ResultClass == ComparisonResultClass.NotApplicable)
+                {
+                    continue;
+                }
+
+                aggregate = aggregate.Add(value);
+            }
+
+            return aggregate;
+        }
+
+        private static bool IsKnownNumeric(ComparisonStructuredValue value)
+        {
+            return value != null
+                && value.NumericValue.HasValue
+                && !value.IsUnknownOrUnsupported
+                && value.ResultClass != ComparisonResultClass.NotApplicable;
+        }
+
+        private static List<string> ContextualLimitations(string phaseLabel, IEnumerable<string> sourceLimitations)
+        {
+            var limitations = new List<string>
+            {
+                "contextual Gem comparison for " + phaseLabel
+            };
+            ComparisonSemantics.AppendLimitations(limitations, sourceLimitations);
+            return limitations;
+        }
+
+        private struct NumericAggregate
+        {
+            internal static readonly NumericAggregate Empty = new NumericAggregate(false, true, 0f, ComparisonConfidence.Verified, null);
+
+            private NumericAggregate(bool seen, bool known, float value, ComparisonConfidence confidence, IEnumerable<string> limitations)
+            {
+                Seen = seen;
+                Known = known;
+                Value = value;
+                Confidence = confidence;
+                Limitations = ComparisonContractLists.Copy(limitations);
+            }
+
+            internal bool Seen { get; }
+            internal bool Known { get; }
+            internal float Value { get; }
+            internal ComparisonConfidence Confidence { get; }
+            internal IReadOnlyList<string> Limitations { get; }
+
+            internal NumericAggregate Add(ComparisonStructuredValue value)
+            {
+                var limitations = ComparisonSemantics.CopyLimitations(Limitations);
+                if (value == null)
+                {
+                    return this;
+                }
+
+                ComparisonSemantics.AppendLimitations(limitations, value.Limitations);
+                var confidence = Seen
+                    ? ComparisonSemantics.MostConservative(Confidence, value.Confidence)
+                    : value.Confidence;
+
+                if (!value.NumericValue.HasValue || value.IsUnknownOrUnsupported || value.ResultClass == ComparisonResultClass.NotApplicable)
+                {
+                    return new NumericAggregate(true, false, Value, confidence, limitations);
+                }
+
+                return new NumericAggregate(true, Known, Value + value.NumericValue.Value, confidence, limitations);
+            }
+        }
+
         private static bool IsDamageMetric(ComparisonMetric metric)
         {
             return ContainsIgnoreCase(metric.MetricId, "damage")
@@ -558,7 +1182,7 @@ namespace ShapeOfDreams.DamageAnalyzer
                 || ContainsIgnoreCase(metric.Label, "dps");
         }
 
-        private static IReadOnlyList<GemState> ReplaceAttachedGem(
+        private static IReadOnlyList<GemState> ApplyGemCandidate(
             BuildStateSnapshot buildState,
             MemoryState memoryContext,
             GemState currentGem,
@@ -800,6 +1424,12 @@ namespace ShapeOfDreams.DamageAnalyzer
                         targets.Add(new LiveGemReplacementTarget(gem, memory, pair.Key.index));
                     }
                 }
+
+                var emptyIndex = heroSkill.GetEmptyGemSlot(location);
+                if (emptyIndex >= 0)
+                {
+                    targets.Add(new LiveGemReplacementTarget(CandidateEquipActionKind.EquipIntoEmptySlot, null, memory, emptyIndex));
+                }
             }
 
             return targets.AsReadOnly();
@@ -819,6 +1449,10 @@ namespace ShapeOfDreams.DamageAnalyzer
                 if (memory != null)
                 {
                     targets.Add(new LiveMemoryReplacementTarget(memory));
+                }
+                else
+                {
+                    targets.Add(new LiveMemoryReplacementTarget(CandidateEquipActionKind.EquipIntoEmptySlot, null, (int)location));
                 }
             }
 
@@ -953,7 +1587,29 @@ namespace ShapeOfDreams.DamageAnalyzer
             var level = ResolveEffectiveLevel(actor);
             CaptureNumericFields(values, actor, actor.GetType(), level, hero);
             CaptureTriggerConfigValues(values, actor as AbilityTrigger);
+            CaptureKnownMaterialUtility(values, actor);
             return values.AsReadOnly();
+        }
+
+        private static void CaptureKnownMaterialUtility(List<ComparisonStructuredValue> values, Actor actor)
+        {
+            if (values == null || actor == null)
+            {
+                return;
+            }
+
+            var contentId = actor.GetType().Name;
+            if (ContainsIgnoreCase(contentId, "Adventure"))
+            {
+                AddTextValue(
+                    values,
+                    CommonComparisonValueIds.MaterialUtilityPrefix + "adventure-essence",
+                    "Adventure Essence utility",
+                    "Whenever you move to a new place, increase another equipped Essence on this Memory by +10% quality and gain Gold",
+                    ComparisonResultClass.Unsupported,
+                    ComparisonConfidence.Unsupported,
+                    new[] { "Adventure Essence quality propagation is material utility but is not quantitatively evaluated by Stage 4C" });
+            }
         }
 
         private static void CaptureNumericFields(List<ComparisonStructuredValue> values, Actor actor, Type type, int level, Hero hero)
@@ -987,17 +1643,7 @@ namespace ShapeOfDreams.DamageAnalyzer
         {
             if (value is ScalingValue scaling)
             {
-                AddValue(values, ResolveNumericFieldValueId(fieldName), fieldName, scaling.GetValue(level, hero), "damage", ComparisonResultClass.Derived, ComparisonConfidence.HighConfidence, null);
-                if (Math.Abs(scaling.adFactor) > 0.0001f)
-                {
-                    AddValue(values, CommonComparisonValueIds.AttackDamageCoefficient, "AD coefficient", scaling.adFactor, "", ComparisonResultClass.Derived, ComparisonConfidence.HighConfidence, new[] { fieldName });
-                }
-
-                if (Math.Abs(scaling.apFactor) > 0.0001f)
-                {
-                    AddValue(values, CommonComparisonValueIds.AbilityPowerCoefficient, "AP coefficient", scaling.apFactor, "", ComparisonResultClass.Derived, ComparisonConfidence.HighConfidence, new[] { fieldName });
-                }
-
+                AddScalingValue(values, fieldName, scaling, level, hero);
                 return;
             }
 
@@ -1014,6 +1660,11 @@ namespace ShapeOfDreams.DamageAnalyzer
                 return;
             }
 
+            if (IsMutableRuntimeStateField(fieldName))
+            {
+                return;
+            }
+
             if (value is float f)
             {
                 AddValue(values, ResolveNumericFieldValueId(fieldName), fieldName, f, "", ComparisonResultClass.Exact, ComparisonConfidence.HighConfidence, null);
@@ -1024,6 +1675,96 @@ namespace ShapeOfDreams.DamageAnalyzer
             {
                 AddValue(values, ResolveNumericFieldValueId(fieldName), fieldName, i, "", ComparisonResultClass.Exact, ComparisonConfidence.HighConfidence, null);
             }
+        }
+
+        private static void AddScalingValue(List<ComparisonStructuredValue> values, string fieldName, ScalingValue scaling, int level, Hero hero)
+        {
+            var valueId = ResolveNumericFieldValueId(fieldName);
+            if (IsInactiveScalingValue(scaling))
+            {
+                if (IsSupportedScalingValueId(valueId))
+                {
+                    AddNotApplicable(values, valueId, FieldLabel(fieldName), fieldName + " native ScalingValue has no base, stat, level, armor, health, or crit contribution");
+                }
+
+                return;
+            }
+
+            if (valueId == CommonComparisonValueIds.DamagePerHit || valueId == CommonComparisonValueIds.DirectDamage)
+            {
+                AddValue(values, CommonComparisonValueIds.DamagePerHit, FieldLabel(fieldName), SafeFloat(() => scaling.GetValue(level, hero)), "damage", ComparisonResultClass.Derived, ComparisonConfidence.HighConfidence, new[] { "contextual ScalingValue.GetValue at observed level/build context: " + fieldName });
+                AddValue(values, CommonComparisonValueIds.BaseDamage, "Base damage", scaling.baseValue, "damage", ComparisonResultClass.Exact, ComparisonConfidence.HighConfidence, new[] { "native ScalingValue.baseValue: " + fieldName });
+                AddValue(values, CommonComparisonValueIds.AttackDamageCoefficient, "AD coefficient", scaling.adFactor, "", ComparisonResultClass.Exact, ComparisonConfidence.HighConfidence, new[] { "native ScalingValue.adFactor: " + fieldName });
+                AddValue(values, CommonComparisonValueIds.AbilityPowerCoefficient, "AP coefficient", scaling.apFactor, "", ComparisonResultClass.Exact, ComparisonConfidence.HighConfidence, new[] { "native ScalingValue.apFactor: " + fieldName });
+                return;
+            }
+
+            if (valueId == CommonComparisonValueIds.Cooldown)
+            {
+                AddValue(values, CommonComparisonValueIds.Cooldown, FieldLabel(fieldName), SafeFloat(() => scaling.GetValue(level, hero)), "s", ComparisonResultClass.Derived, ComparisonConfidence.HighConfidence, new[] { "contextual ScalingValue.GetValue at observed level/build context: " + fieldName });
+                return;
+            }
+
+            if (valueId == CommonComparisonValueIds.Charges || valueId == CommonComparisonValueIds.HitCount)
+            {
+                AddValue(values, valueId, FieldLabel(fieldName), SafeFloat(() => scaling.GetValue(level, hero)), "", ComparisonResultClass.Derived, ComparisonConfidence.HighConfidence, new[] { "contextual ScalingValue.GetValue at observed level/build context: " + fieldName });
+                return;
+            }
+
+            if (valueId == CommonComparisonValueIds.Radius || valueId == CommonComparisonValueIds.Range || valueId == CommonComparisonValueIds.Area)
+            {
+                AddValue(values, valueId, FieldLabel(fieldName), SafeFloat(() => scaling.GetValue(level, hero)), "m", ComparisonResultClass.Derived, ComparisonConfidence.HighConfidence, new[] { "contextual ScalingValue.GetValue at observed level/build context: " + fieldName });
+            }
+        }
+
+        private static bool IsInactiveScalingValue(ScalingValue scaling)
+        {
+            return Math.Abs(scaling.baseValue) <= 0.0001f
+                && Math.Abs(scaling.adFactor) <= 0.0001f
+                && Math.Abs(scaling.apFactor) <= 0.0001f
+                && Math.Abs(scaling.lvlFactor) <= 0.0001f
+                && Math.Abs(scaling.armorFactor) <= 0.0001f
+                && Math.Abs(scaling.addedHpFactor) <= 0.0001f
+                && Math.Abs(scaling.critPercentageFactor) <= 0.0001f;
+        }
+
+        private static bool IsSupportedScalingValueId(string valueId)
+        {
+            return valueId == CommonComparisonValueIds.DirectDamage
+                || valueId == CommonComparisonValueIds.DamagePerHit
+                || valueId == CommonComparisonValueIds.Cooldown
+                || valueId == CommonComparisonValueIds.Charges
+                || valueId == CommonComparisonValueIds.HitCount
+                || valueId == CommonComparisonValueIds.Radius
+                || valueId == CommonComparisonValueIds.Range
+                || valueId == CommonComparisonValueIds.Area;
+        }
+
+        private static bool IsMutableRuntimeStateField(string fieldName)
+        {
+            var normalized = NormalizeValueId(fieldName);
+            return normalized.StartsWith("current", StringComparison.Ordinal)
+                || normalized.StartsWith("currentconfig", StringComparison.Ordinal);
+        }
+
+        private static string FieldLabel(string fieldName)
+        {
+            return string.IsNullOrEmpty(fieldName) ? "Value" : fieldName;
+        }
+
+        private static bool IsDamageField(string normalized)
+        {
+            return normalized.Contains("damage") || normalized.Contains("dmg") || normalized == "amount";
+        }
+
+        private static bool IsHitCountField(string normalized)
+        {
+            return normalized.Contains("hitcount") || normalized.Contains("hits") || normalized == "hit";
+        }
+
+        private static bool IsAreaField(string normalized)
+        {
+            return normalized.Contains("area") || normalized.Contains("width") || normalized.Contains("length");
         }
 
         private static void CaptureTriggerConfigValues(List<ComparisonStructuredValue> values, AbilityTrigger trigger)
@@ -1042,7 +1783,7 @@ namespace ShapeOfDreams.DamageAnalyzer
                 }
 
                 AddValue(values, CommonComparisonValueIds.Cooldown, "Cooldown", config.cooldownTime, "s", ComparisonResultClass.Exact, ComparisonConfidence.HighConfidence, new[] { "trigger config " + i.ToString(CultureInfo.InvariantCulture) });
-                AddValue(values, CommonComparisonValueIds.Charges, "Charges", config.maxCharges + config.addedCharges, "charges", ComparisonResultClass.Exact, ComparisonConfidence.HighConfidence, new[] { "trigger config " + i.ToString(CultureInfo.InvariantCulture) });
+                AddValue(values, CommonComparisonValueIds.Charges, "Charges", ResolveDisplayCharges(config), "charges", ComparisonResultClass.Exact, ComparisonConfidence.HighConfidence, ChargeLimitations(i, config));
                 AddValue(values, CommonComparisonValueIds.Range, "Range", config.effectiveRange, "m", ComparisonResultClass.Exact, ComparisonConfidence.HighConfidence, new[] { "trigger config " + i.ToString(CultureInfo.InvariantCulture) });
             }
         }
@@ -1078,11 +1819,36 @@ namespace ShapeOfDreams.DamageAnalyzer
             values.Add(new ComparisonStructuredValue(valueId, label, numericValue, unit, "", resultClass, confidence, limitations));
         }
 
+        private static void AddTextValue(
+            List<ComparisonStructuredValue> values,
+            string valueId,
+            string label,
+            string textValue,
+            ComparisonResultClass resultClass,
+            ComparisonConfidence confidence,
+            IEnumerable<string> limitations)
+        {
+            if (values == null || string.IsNullOrEmpty(valueId) || ContainsValue(values, valueId))
+            {
+                return;
+            }
+
+            values.Add(new ComparisonStructuredValue(valueId, label, null, "", textValue, resultClass, confidence, limitations));
+        }
+
         private static void AddUnknown(List<ComparisonStructuredValue> values, string valueId, string label, string limitation)
         {
             if (!ContainsValue(values, valueId))
             {
                 values.Add(new ComparisonStructuredValue(valueId, label, null, "", "", ComparisonResultClass.Unknown, ComparisonConfidence.Unknown, new[] { limitation }));
+            }
+        }
+
+        private static void AddNotApplicable(List<ComparisonStructuredValue> values, string valueId, string label, string limitation)
+        {
+            if (!ContainsValue(values, valueId))
+            {
+                values.Add(new ComparisonStructuredValue(valueId, label, null, "", "N/A", ComparisonResultClass.NotApplicable, ComparisonConfidence.Verified, new[] { limitation }));
             }
         }
 
@@ -1121,7 +1887,7 @@ namespace ShapeOfDreams.DamageAnalyzer
         private static string ResolveNumericFieldValueId(string fieldName)
         {
             var normalized = NormalizeValueId(fieldName);
-            if (normalized.Contains("damage") || normalized.Contains("dmg"))
+            if (IsDamageField(normalized))
             {
                 return CommonComparisonValueIds.DamagePerHit;
             }
@@ -1146,7 +1912,12 @@ namespace ShapeOfDreams.DamageAnalyzer
                 return CommonComparisonValueIds.Range;
             }
 
-            if (normalized.Contains("hit") || normalized.Contains("count"))
+            if (IsAreaField(normalized))
+            {
+                return CommonComparisonValueIds.Area;
+            }
+
+            if (IsHitCountField(normalized))
             {
                 return CommonComparisonValueIds.HitCount;
             }
@@ -1182,8 +1953,27 @@ namespace ShapeOfDreams.DamageAnalyzer
             }
             catch
             {
-                return 0f;
+                return float.NaN;
             }
+        }
+
+        private static int ResolveDisplayCharges(TriggerConfig config)
+        {
+            return config.maxCharges;
+        }
+
+        private static IReadOnlyList<string> ChargeLimitations(int configIndex, TriggerConfig config)
+        {
+            return new[]
+            {
+                "trigger config " + configIndex.ToString(CultureInfo.InvariantCulture),
+                "config.maxCharges is the displayed/usable charge cap; config.addedCharges is recharge increment"
+            };
+        }
+
+        private static bool ContainsIgnoreCase(string value, string pattern)
+        {
+            return !string.IsNullOrEmpty(value) && value.IndexOf(pattern, StringComparison.OrdinalIgnoreCase) >= 0;
         }
     }
 }

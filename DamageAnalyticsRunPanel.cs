@@ -420,9 +420,9 @@ namespace ShapeOfDreams.DamageAnalyzer
             var rect = layout.RunRect;
 
             DamageAnalyticsUiInput.RegisterPanelRect(DamageAnalyticsPanelKind.Run, rect);
-            DamageAnalyticsUiInput.ConsumeMouseEventsInside(rect);
             GUI.Box(rect, GUIContent.none, _panelStyle);
             DrawPanel(rect, view);
+            DamageAnalyticsUiInput.ConsumeMouseEventsInside(rect);
         }
 
         internal static float GetCurrentPanelHeight()
@@ -556,18 +556,33 @@ namespace ShapeOfDreams.DamageAnalyzer
             var tabWidth = width / 3f;
             if (GUI.Button(new Rect(x, y, tabWidth - 4f, RowHeight), RunAnalyticsPanelPresenter.GetTabLabel(RunAnalyticsPanelMode.Memory), _tabStyle))
             {
-                _mode = RunAnalyticsPanelMode.Memory;
+                SelectMode(RunAnalyticsPanelMode.Memory);
             }
 
             if (GUI.Button(new Rect(x + tabWidth, y, tabWidth - 4f, RowHeight), RunAnalyticsPanelPresenter.GetTabLabel(RunAnalyticsPanelMode.Gem), _tabStyle))
             {
-                _mode = RunAnalyticsPanelMode.Gem;
+                SelectMode(RunAnalyticsPanelMode.Gem);
             }
 
             if (GUI.Button(new Rect(x + tabWidth * 2f, y, tabWidth, RowHeight), RunAnalyticsPanelPresenter.GetTabLabel(RunAnalyticsPanelMode.Package), _tabStyle))
             {
-                _mode = RunAnalyticsPanelMode.Package;
+                SelectMode(RunAnalyticsPanelMode.Package);
             }
+        }
+
+        internal static void SelectMode(RunAnalyticsPanelMode mode)
+        {
+            if (_mode != mode)
+            {
+                _expandedPackageId = null;
+            }
+
+            _mode = mode;
+        }
+
+        internal static RunAnalyticsPanelMode CurrentModeForValidation
+        {
+            get { return _mode; }
         }
 
         private static void DrawPlayerSelector(float x, float y, float width, RunAnalyticsPanelView view)

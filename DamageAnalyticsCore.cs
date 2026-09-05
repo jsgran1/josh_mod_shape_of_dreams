@@ -621,10 +621,16 @@ namespace ShapeOfDreams.DamageAnalyzer
         private EncounterDamageSnapshot _lastCompletedEncounter;
         private RunDamageSnapshot _lastCompletedRun;
         private bool _runFinalized;
+        private PlayerKey? _confirmedSoloPlayerKey;
 
         internal DamageAnalyticsService()
         {
             StartNewRun();
+        }
+
+        internal void SetConfirmedSoloPlayer(PlayerKey? localPlayerKey)
+        {
+            _confirmedSoloPlayerKey = localPlayerKey;
         }
 
         internal DamageEventRecord CaptureDamage(
@@ -634,6 +640,7 @@ namespace ShapeOfDreams.DamageAnalyzer
             TargetRelationship targetRelationship,
             DamageSourceCategory sourceCategory)
         {
+            ownerPlayerKey = ApplyConfirmedSoloInvariant(ownerPlayerKey);
             var flags = DamageAttributionFlags.None;
             if (ownerPlayerKey.HasValue)
             {
@@ -687,6 +694,7 @@ namespace ShapeOfDreams.DamageAnalyzer
             GemKey? gemKey,
             MemoryKey? originatingMemoryKey)
         {
+            ownerPlayerKey = ApplyConfirmedSoloInvariant(ownerPlayerKey);
             var sourceCategory = sourceKey.Category;
             var flags = DamageAttributionFlags.None;
             if (ownerPlayerKey.HasValue)
@@ -736,6 +744,16 @@ namespace ShapeOfDreams.DamageAnalyzer
             return record;
         }
 
+        private PlayerKey? ApplyConfirmedSoloInvariant(PlayerKey? ownerPlayerKey)
+        {
+            if (!ownerPlayerKey.HasValue || !_confirmedSoloPlayerKey.HasValue)
+            {
+                return ownerPlayerKey;
+            }
+
+            return ownerPlayerKey.Value.Equals(_confirmedSoloPlayerKey.Value) ? ownerPlayerKey : (PlayerKey?)null;
+        }
+
         internal void OnRoomStarted(float timestamp)
         {
             if (_currentEncounter != null && _currentEncounter.IsActive)
@@ -779,6 +797,7 @@ namespace ShapeOfDreams.DamageAnalyzer
             _lastCompletedEncounter = null;
             _lastCompletedRun = null;
             _runFinalized = false;
+            _confirmedSoloPlayerKey = null;
             StartNewRun();
         }
 

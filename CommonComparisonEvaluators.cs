@@ -7,6 +7,8 @@ namespace ShapeOfDreams.DamageAnalyzer
     {
         internal const string DirectDamage = "direct-damage";
         internal const string DamagePerHit = "damage-per-hit";
+        internal const string ContextualMemoryDamage = "contextual-memory-damage";
+        internal const string DamageModifier = "damage-modifier";
         internal const string BaseDamage = "base-damage";
         internal const string HitCount = "hit-count";
         internal const string Cooldown = "cooldown";
@@ -20,6 +22,7 @@ namespace ShapeOfDreams.DamageAnalyzer
         internal const string AbilityPower = "ability-power";
         internal const string WholeBuildDps = "whole-build-dps";
         internal const string StatPrefix = "stat:";
+        internal const string MaterialUtilityPrefix = "utility:";
     }
 
     internal static class CommonComparisonEvaluators
@@ -36,6 +39,42 @@ namespace ShapeOfDreams.DamageAnalyzer
                 after,
                 ComparisonResultClass.Exact,
                 new[] { CommonComparisonValueIds.DirectDamage, CommonComparisonValueIds.DamagePerHit, CommonComparisonValueIds.BaseDamage });
+        }
+
+        internal static ComparisonMetric EvaluateContextualMemoryDamage(ComparisonStructuredValue before, ComparisonStructuredValue after)
+        {
+            return EvaluateNumericMetric(
+                "contextual-memory-damage",
+                "Contextual Memory damage",
+                "damage",
+                before,
+                after,
+                ComparisonResultClass.Derived,
+                new[] { CommonComparisonValueIds.ContextualMemoryDamage });
+        }
+
+        internal static ComparisonMetric EvaluateDamageModifier(ComparisonStructuredValue before, ComparisonStructuredValue after)
+        {
+            return EvaluateNumericMetric(
+                "damage-modifier",
+                "Damage modifier",
+                "multiplier",
+                before,
+                after,
+                ComparisonResultClass.Derived,
+                new[] { CommonComparisonValueIds.DamageModifier });
+        }
+
+        internal static ComparisonMetric EvaluateBaseDamage(ComparisonStructuredValue before, ComparisonStructuredValue after)
+        {
+            return EvaluateNumericMetric(
+                "base-damage",
+                "Base damage",
+                "damage",
+                before,
+                after,
+                ComparisonResultClass.Exact,
+                new[] { CommonComparisonValueIds.BaseDamage });
         }
 
         internal static ComparisonMetric EvaluateHitCount(ComparisonStructuredValue before, ComparisonStructuredValue after)
@@ -312,6 +351,14 @@ namespace ShapeOfDreams.DamageAnalyzer
                 return ComparisonMetric.Unsupported(metricId, label, limitations);
             }
 
+            if (IsNotApplicable(before) || IsNotApplicable(after))
+            {
+                ComparisonSemantics.AppendLimitations(limitations, before.Limitations);
+                ComparisonSemantics.AppendLimitations(limitations, after.Limitations);
+                limitations.Add(label + " is not applicable for this option");
+                return ComparisonMetric.NotApplicable(metricId, label, limitations);
+            }
+
             if (!IsKnownNumeric(before, limitations, "before " + label) || !IsKnownNumeric(after, limitations, "after " + label))
             {
                 return ComparisonMetric.Unknown(metricId, label, limitations);
@@ -364,6 +411,23 @@ namespace ShapeOfDreams.DamageAnalyzer
                     "",
                     ComparisonConfidence.Unsupported,
                     new[] { "structured value id was not supported for " + description });
+            }
+
+            if (IsNotApplicable(before) || IsNotApplicable(after))
+            {
+                ComparisonSemantics.AppendLimitations(limitations, before.Limitations);
+                ComparisonSemantics.AppendLimitations(limitations, after.Limitations);
+                limitations.Add(description + " is not applicable for this option");
+                return new ComparisonUtilityChange(
+                    utilityId,
+                    description + " is not applicable",
+                    null,
+                    null,
+                    null,
+                    "",
+                    ComparisonResultClass.NotApplicable,
+                    ComparisonConfidence.Verified,
+                    limitations);
             }
 
             if (!IsKnownNumeric(before, limitations, "before " + description) || !IsKnownNumeric(after, limitations, "after " + description))
@@ -450,6 +514,11 @@ namespace ShapeOfDreams.DamageAnalyzer
             }
 
             return true;
+        }
+
+        private static bool IsNotApplicable(ComparisonStructuredValue value)
+        {
+            return value != null && value.ResultClass == ComparisonResultClass.NotApplicable;
         }
 
         private static ComparisonConfidence MostConservative(params ComparisonStructuredValue[] values)

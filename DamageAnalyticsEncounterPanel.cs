@@ -349,9 +349,9 @@ namespace ShapeOfDreams.DamageAnalyzer
             var rect = layout.EncounterRect;
 
             DamageAnalyticsUiInput.RegisterPanelRect(DamageAnalyticsPanelKind.Encounter, rect);
-            DamageAnalyticsUiInput.ConsumeMouseEventsInside(rect);
             GUI.Box(rect, GUIContent.none, _panelStyle);
             DrawPanel(rect, view, displaySources);
+            DamageAnalyticsUiInput.ConsumeMouseEventsInside(rect);
         }
 
         internal static float GetCurrentPanelHeight()

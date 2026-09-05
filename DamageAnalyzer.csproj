@@ -8,6 +8,9 @@
     <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>
 
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <!-- NoStdLib references Unity's stripped mscorlib, which lacks TargetFrameworkAttribute; the SDK's
+         auto-generated attribute would otherwise fail to compile (CS0518). -->
+    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
     <AssemblyTitle>Damage Analyzer</AssemblyTitle>
     <AssemblyName>DamageAnalyzer</AssemblyName>
     <AssemblyProduct>Shape of Dreams Damage Analyzer</AssemblyProduct>

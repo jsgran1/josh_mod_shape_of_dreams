@@ -8,6 +8,7 @@ namespace ShapeOfDreams.DamageAnalyzer
         Known,
         Estimated,
         Utility,
+        NotApplicable,
         Unknown,
         Unsupported,
         Empty
@@ -200,7 +201,7 @@ namespace ShapeOfDreams.DamageAnalyzer
             {
                 recommendationState = ComparisonRecommendationState.Recommended;
                 recommended = ranked[0];
-                recommendationText = "Best comparable damage replacement";
+                recommendationText = "Best known damage improvement";
             }
 
             return new ComparisonPresentationView(
@@ -339,7 +340,9 @@ namespace ShapeOfDreams.DamageAnalyzer
             var state = ResolveMetricState(metric.ResultClass, metric.Confidence);
             var valueText = state == ComparisonPresentationMetricState.Unknown
                 ? "Unknown"
-                : state == ComparisonPresentationMetricState.Unsupported ? "Unsupported" : "";
+                : state == ComparisonPresentationMetricState.Unsupported
+                    ? "Unsupported"
+                    : state == ComparisonPresentationMetricState.NotApplicable ? "N/A" : "";
             return new ComparisonPresentationMetricRow(
                 state,
                 metric.MetricId,
@@ -369,6 +372,9 @@ namespace ShapeOfDreams.DamageAnalyzer
 
             var state = ResolveUtilityState(utility);
             var hasNumbers = utility.BeforeValue.HasValue || utility.AfterValue.HasValue || utility.DeltaValue.HasValue;
+            var valueText = state == ComparisonPresentationMetricState.NotApplicable
+                ? "N/A"
+                : hasNumbers ? "" : utility.Description;
             return new ComparisonPresentationMetricRow(
                 state,
                 utility.UtilityId,
@@ -376,9 +382,9 @@ namespace ShapeOfDreams.DamageAnalyzer
                 hasNumbers ? FormatMetricValue(utility.BeforeValue, utility.Unit) : "",
                 hasNumbers ? FormatMetricValue(utility.AfterValue, utility.Unit) : "",
                 hasNumbers ? FormatDelta(utility.DeltaValue, null, utility.Unit) : "",
-                hasNumbers ? "" : utility.Description,
-                GetResultDetail(ComparisonResultClass.Utility, utility.Confidence),
-                ComparisonResultClass.Utility,
+                valueText,
+                GetResultDetail(utility.ResultClass, utility.Confidence),
+                utility.ResultClass,
                 utility.Confidence,
                 utility.Limitations);
         }
@@ -439,6 +445,11 @@ namespace ShapeOfDreams.DamageAnalyzer
                 return ComparisonPresentationMetricState.Unsupported;
             }
 
+            if (resultClass == ComparisonResultClass.NotApplicable)
+            {
+                return ComparisonPresentationMetricState.NotApplicable;
+            }
+
             if (resultClass == ComparisonResultClass.Unknown || confidence == ComparisonConfidence.Unknown)
             {
                 return ComparisonPresentationMetricState.Unknown;
@@ -457,6 +468,11 @@ namespace ShapeOfDreams.DamageAnalyzer
             if (utility.Confidence == ComparisonConfidence.Unsupported)
             {
                 return ComparisonPresentationMetricState.Unsupported;
+            }
+
+            if (utility.ResultClass == ComparisonResultClass.NotApplicable)
+            {
+                return ComparisonPresentationMetricState.NotApplicable;
             }
 
             if (utility.Confidence == ComparisonConfidence.Unknown)
@@ -594,7 +610,9 @@ namespace ShapeOfDreams.DamageAnalyzer
 
         private static bool IsUnknownOrUnsupportedState(ComparisonPresentationMetricState state)
         {
-            return state == ComparisonPresentationMetricState.Unknown || state == ComparisonPresentationMetricState.Unsupported;
+            return state == ComparisonPresentationMetricState.Unknown
+                || state == ComparisonPresentationMetricState.Unsupported
+                || state == ComparisonPresentationMetricState.NotApplicable;
         }
 
         private static string ResolveSuppressionText(IReadOnlyList<ComparisonOptionPresentation> options, string comparableMetricId)
@@ -678,6 +696,11 @@ namespace ShapeOfDreams.DamageAnalyzer
         {
             if (comparison == null || !comparison.ReplacementTarget.HasValue)
             {
+                if (comparison != null && comparison.ActionKind == CandidateEquipActionKind.EquipIntoEmptySlot)
+                {
+                    return !string.IsNullOrEmpty(comparison.ActionLabel) ? comparison.ActionLabel : "Empty slot";
+                }
+
                 return "No replacement";
             }
 
